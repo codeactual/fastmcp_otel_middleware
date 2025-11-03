@@ -1,7 +1,7 @@
 """Test to reproduce the tool name issue with FastMCP middleware."""
 
 import asyncio
-from typing import Any
+
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -9,7 +9,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from fastmcp_otel_middleware.middleware import (
     FastMCPTracingMiddleware,
 )
-
 
 # Set up tracing
 provider = TracerProvider()
@@ -34,7 +33,7 @@ async def simulate_fastmcp_call_without_tool_name():
 
     # Scenario 1: Tool name in kwargs (works as expected)
     print("\n=== Scenario 1: tool_name in kwargs ===")
-    result = await middleware(call_next, tool_name="my_tool", call_id="123")
+    await middleware(call_next, tool_name="my_tool", call_id="123")
 
     spans = exporter.get_finished_spans()
     if spans:
@@ -45,7 +44,7 @@ async def simulate_fastmcp_call_without_tool_name():
 
     # Scenario 2: Tool name in different parameter (doesn't work)
     print("\n=== Scenario 2: name parameter instead of tool_name ===")
-    result = await middleware(call_next, name="my_tool", call_id="123")
+    await middleware(call_next, name="my_tool", call_id="123")
 
     spans = exporter.get_finished_spans()
     if spans:
@@ -56,7 +55,7 @@ async def simulate_fastmcp_call_without_tool_name():
 
     # Scenario 3: No tool name at all (common issue)
     print("\n=== Scenario 3: No tool name in kwargs ===")
-    result = await middleware(call_next, call_id="123", _meta={})
+    await middleware(call_next, call_id="123", _meta={})
 
     spans = exporter.get_finished_spans()
     if spans:
@@ -67,12 +66,13 @@ async def simulate_fastmcp_call_without_tool_name():
 
     # Scenario 4: Tool name in args (object with name attribute)
     print("\n=== Scenario 4: Tool name in args as object attribute ===")
+
     class ToolContext:
         def __init__(self, name: str):
             self.name = name
 
     context = ToolContext("my_tool")
-    result = await middleware(call_next, context, call_id="123")
+    await middleware(call_next, context, call_id="123")
 
     spans = exporter.get_finished_spans()
     if spans:
@@ -96,7 +96,7 @@ async def simulate_readme_example():
 
     # Case where tool_name is present
     print("\n--- With tool_name in kwargs ---")
-    result = await custom_middleware(call_next, tool_name="my_tool", call_id="123")
+    await custom_middleware(call_next, tool_name="my_tool", call_id="123")
 
     spans = exporter.get_finished_spans()
     if spans:
@@ -107,14 +107,14 @@ async def simulate_readme_example():
 
     # Case where tool_name is missing (the issue!)
     print("\n--- Without tool_name in kwargs (reproduces issue) ---")
-    result = await custom_middleware(call_next, call_id="123")
+    await custom_middleware(call_next, call_id="123")
 
     spans = exporter.get_finished_spans()
     if spans:
         span = spans[-1]
         print(f"Span name: {span.name}")
         print(f"Attributes: {dict(span.attributes)}")
-        print(f"\nNOTE: Span name is 'tool:unknown' and 'fastmcp.tool.name' attribute is missing!")
+        print("\nNOTE: Span name is 'tool:unknown' and 'fastmcp.tool.name' attribute is missing!")
     exporter.clear()
 
 
