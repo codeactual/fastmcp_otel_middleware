@@ -23,27 +23,29 @@ Depending on your exporter you may also want `opentelemetry-sdk` and the exporte
 
 ```python
 from fastmcp import FastMCP
-from fastmcp_otel_middleware import FastMCPTracingMiddleware, instrument_fastmcp
+from fastmcp_otel_middleware import instrument_fastmcp
 
-app = FastMCP()
+app = FastMCP("MyServer")
 
-# Attach the middleware.  The helper attempts to detect the correct registration
-# mechanism, but you can provide a custom ``register`` callback if your FastMCP
-# version uses a different API.
+# Basic usage: attach the middleware with default configuration
 instrument_fastmcp(app)
 
-# Optionally customise how spans are named or which attributes are added.
-custom_middleware = FastMCPTracingMiddleware(
-    span_name_factory=lambda args, kwargs: f"tool:{kwargs.get('tool_name', 'unknown')}",
+# Optionally customize span naming and other behavior
+instrument_fastmcp(
+    app,
+    span_name_prefix="tool.",  # Creates spans like "tool.get_temperature"
+    include_arguments=True,     # Include tool arguments in span attributes
 )
-instrument_fastmcp(app, middleware=custom_middleware)
 ```
 
 When a client invokes a tool and includes tracing headers inside the `_meta`
 object, the middleware extracts the headers, continues the trace, and wraps the
-handler invocation with a server span.  The span contains useful metadata such
-as the tool name, call identifier, and whether the invocation completed
-successfully.
+handler invocation with a server span. The span automatically includes:
+
+- **Tool name**: `fastmcp.tool.name` attribute from `context.message.name`
+- **MCP metadata**: `mcp.method` and `mcp.source` attributes
+- **Success status**: `fastmcp.tool.success` indicating if the call succeeded
+- **Arguments** (optional): `fastmcp.tool.arguments` if `include_arguments=True`
 
 ## Extracting Context Manually
 
@@ -63,8 +65,27 @@ meta = {
 ctx = get_context_from_meta(meta)
 ```
 
+## Requirements
+
+- **FastMCP 2.9+**: This middleware uses the hook-based middleware system introduced in FastMCP 2.9
+- **Python 3.12+**: Required for proper type annotation support
+- **OpenTelemetry API**: For tracing functionality
+
+## How It Works
+
+This middleware uses FastMCP's hook-based middleware pattern (introduced in v2.9) to reliably access tool names and MCP protocol information. The `on_call_tool` hook receives a `MiddlewareContext` object that contains:
+
+- `context.message.name`: The tool name being invoked
+- `context.message.arguments`: The tool arguments
+- `context.message._meta`: Metadata sent by the client (including OTel headers)
+- `context.method`: The MCP method (e.g., "tools/call")
+- `context.source`: Source of the request ("client" or "server")
+
+This approach ensures that tool names are always correctly captured in traces, unlike older callable-style middleware that relied on kwargs.
+
 ## References
 
 - [_meta field specification](https://modelcontextprotocol.io/specification/2025-06-18/basic#meta)
+- [FastMCP Middleware Documentation](https://gofastmcp.com/servers/middleware)
 - [Langfuse MCP tracing example](https://github.com/langfuse/langfuse-examples/blob/main/applications/mcp-tracing/src/utils/otel_utils.py)
 - [FastMCP OpenTelemetry example](https://github.com/jlowin/fastmcp/blob/2e6e8256d9b0865bf8ce93797be6480be0651685/examples/opentelemetry_example.py)

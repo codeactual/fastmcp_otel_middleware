@@ -20,18 +20,38 @@ Langfuse MCP tracing example referenced in the module README.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol, Sequence
 
 from opentelemetry import context, trace
 from opentelemetry.context import Context
 from opentelemetry.propagate import get_global_textmap
 from opentelemetry.propagators.textmap import Getter, TextMapPropagator
-from opentelemetry.trace import Span, SpanKind, Status, StatusCode, Tracer
+from opentelemetry.trace import SpanKind, Status, StatusCode, Tracer
 
 MetaMapping = Mapping[str, Any]
-MiddlewareCallable = Callable[..., Awaitable[Any]]
-SpanNameFactory = Callable[[tuple[Any, ...], MutableMapping[str, Any]], str]
-AttributesFactory = Callable[[tuple[Any, ...], MutableMapping[str, Any]], Mapping[str, Any]]
+
+
+class ToolCallMessage(Protocol):
+    """Protocol for FastMCP tool call messages."""
+
+    name: str  # Tool name
+    arguments: dict[str, Any] | None  # Tool arguments
+
+    @property
+    def _meta(self) -> dict[str, Any] | None:
+        """Optional metadata sent by the client."""
+        ...
+
+
+class MiddlewareContext(Protocol):
+    """Protocol for FastMCP middleware context objects."""
+
+    message: ToolCallMessage  # The MCP message being processed
+    method: str | None  # The MCP method (e.g., "tools/call")
+    source: str  # Source of the request ("client" or "server")
+
+
+CallNext = Callable[[MiddlewareContext], Awaitable[Any]]
 
 
 class MetaCarrierGetter(Getter[MetaMapping]):
@@ -120,108 +140,112 @@ def get_context_from_meta(
     return propagator.extract(carrier=meta, getter=getter)
 
 
-def default_span_name_factory(args: tuple[Any, ...], kwargs: MutableMapping[str, Any]) -> str:
-    """Guess a sensible span name based on FastMCP call metadata."""
-
-    if "tool_name" in kwargs and isinstance(kwargs["tool_name"], str):
-        return kwargs["tool_name"]
-    if "name" in kwargs and isinstance(kwargs["name"], str):
-        return kwargs["name"]
-    for value in args:
-        name = getattr(value, "name", None)
-        if isinstance(name, str):
-            return name
-    return "fastmcp.tool"
-
-
-def default_attributes_factory(
-    args: tuple[Any, ...],
-    kwargs: MutableMapping[str, Any],
-) -> Mapping[str, Any]:
-    """Return a stable set of OpenTelemetry attributes for a tool invocation."""
-
-    attributes: dict[str, Any] = {}
-    tool_name = kwargs.get("tool_name") or kwargs.get("name")
-    if isinstance(tool_name, str):
-        attributes["fastmcp.tool.name"] = tool_name
-    tool_call_id = kwargs.get("call_id") or kwargs.get("id")
-    if isinstance(tool_call_id, str):
-        attributes["fastmcp.tool.call_id"] = tool_call_id
-    namespace = kwargs.get("namespace") or kwargs.get("tool_namespace")
-    if isinstance(namespace, str):
-        attributes["fastmcp.tool.namespace"] = namespace
-    return attributes
-
-
 @dataclass
 class FastMCPTracingMiddleware:
-    """An awaitable FastMCP middleware that emits OpenTelemetry spans.
+    """FastMCP hook-based middleware that emits OpenTelemetry spans for tool calls.
 
-    The middleware is compatible with the callable interface used by the
-    ``fastmcp`` package: it receives the ``call_next`` handler as the first
-    argument followed by the standard tool invocation arguments.  The middleware
-    extracts OpenTelemetry context from any `_meta` field present in the call
-    arguments, starts a server span that wraps the downstream handler, and makes
-    the extracted context current for the duration of the invocation.
+    This middleware uses FastMCP's hook-based middleware system (introduced in v2.9)
+    to provide reliable access to tool names and other MCP protocol information.
+    It extracts OpenTelemetry context from the `_meta` field, starts a server span
+    for each tool invocation, and propagates the context through the call chain.
+
+    Compatible with FastMCP 2.9+. Does not depend on the fastmcp package directly,
+    using duck typing to remain lightweight and flexible.
 
     Parameters
     ----------
     tracer:
-        Optional OpenTelemetry tracer to use.  When omitted, the module's
+        Optional OpenTelemetry tracer to use. When omitted, the module's
         default tracer is used.
-    span_name_factory:
-        Callable that produces the span name.  Defaults to
-        :func:`default_span_name_factory`.
-    attributes_factory:
-        Callable that produces span attributes.  Defaults to
-        :func:`default_attributes_factory`.
+    span_name_prefix:
+        Optional prefix for span names. Defaults to empty string.
+        Example: "tool." will create spans like "tool.get_temperature"
     propagator:
         Optional custom propagator for context extraction.
     getter:
         Optional custom getter implementation for `_meta` carriers.
     span_kind:
-        Kind of the span to emit.  Defaults to :class:`SpanKind.SERVER` which is
+        Kind of the span to emit. Defaults to SpanKind.SERVER which is
         appropriate for server-side handling of tool invocations.
     record_successful_result:
-        When ``True`` the middleware will attach a ``fastmcp.tool.success``
-        attribute with value ``True`` when the downstream handler returns
-        without raising.
+        When True, attach a "fastmcp.tool.success" attribute with value True
+        when the tool handler returns without raising.
     record_tool_exceptions:
-        When ``True`` (default) exceptions raised by the downstream handler will
-        be recorded on the span and the status will be marked as ERROR before
-        re-raising the exception.
+        When True (default), exceptions raised by tool handlers will be recorded
+        on the span and the status will be marked as ERROR before re-raising.
+    include_arguments:
+        When True, include stringified tool arguments in span attributes as
+        "fastmcp.tool.arguments". Default is False to avoid leaking sensitive data.
     """
 
     tracer: Tracer | None = None
-    span_name_factory: SpanNameFactory = default_span_name_factory
-    attributes_factory: AttributesFactory = default_attributes_factory
+    span_name_prefix: str = ""
     propagator: TextMapPropagator | None = None
     getter: MetaCarrierGetter | None = None
     span_kind: SpanKind = SpanKind.SERVER
     record_successful_result: bool = True
     record_tool_exceptions: bool = True
+    include_arguments: bool = False
 
-    async def __call__(self, call_next: MiddlewareCallable, *args: Any, **kwargs: Any) -> Any:
-        meta = self._extract_meta(args, kwargs)
+    async def on_call_tool(self, ctx: MiddlewareContext, call_next: CallNext) -> Any:
+        """Handle tool call requests with OpenTelemetry tracing.
+
+        This method is called by FastMCP for each tool invocation. It:
+        1. Extracts the tool name from context.message.name
+        2. Extracts OpenTelemetry context from context.message._meta
+        3. Creates a server span for the tool invocation
+        4. Calls the next handler in the middleware chain
+        5. Records success/failure and returns the result
+
+        Parameters
+        ----------
+        ctx:
+            FastMCP middleware context containing the MCP message and metadata.
+        call_next:
+            Callable to invoke the next middleware or the final tool handler.
+
+        Returns
+        -------
+        Any
+            The result returned by the tool handler.
+        """
+        # Extract tool name from the MCP message
+        tool_name = ctx.message.name
+
+        # Extract OpenTelemetry context from _meta field
+        meta = getattr(ctx.message, "_meta", None)
         parent_context = get_context_from_meta(meta, self.propagator, self.getter)
+
+        # Attach the extracted context to the current task
         token = context.attach(parent_context)
+
+        # Get tracer and create span name
         tracer = self.tracer or trace.get_tracer(__name__)
-        span_name = self.span_name_factory(args, kwargs)
-        attributes = dict(self.attributes_factory(args, kwargs) or {})
+        span_name = f"{self.span_name_prefix}{tool_name}"
 
         try:
             with tracer.start_as_current_span(
                 span_name, context=parent_context, kind=self.span_kind
             ) as span:
-                self._apply_attributes(span, attributes)
+                # Add span attributes
+                span.set_attribute("fastmcp.tool.name", tool_name)
+                if ctx.method:
+                    span.set_attribute("mcp.method", ctx.method)
+                span.set_attribute("mcp.source", ctx.source)
+
+                if self.include_arguments and ctx.message.arguments:
+                    span.set_attribute("fastmcp.tool.arguments", str(ctx.message.arguments))
+
                 try:
-                    result = await call_next(*args, **kwargs)
+                    # Call the next middleware or tool handler
+                    result = await call_next(ctx)
+
                     if self.record_successful_result:
                         span.set_attribute("fastmcp.tool.success", True)
+
                     return result
-                except (
-                    Exception
-                ) as exc:  # pragma: no cover - defensive, fastmcp handles this upstream
+
+                except Exception as exc:
                     if self.record_tool_exceptions:
                         span.record_exception(exc)
                         span.set_status(Status(StatusCode.ERROR, str(exc)))
@@ -230,85 +254,70 @@ class FastMCPTracingMiddleware:
         finally:
             context.detach(token)
 
-    # -- private helpers -------------------------------------------------
-
-    def _extract_meta(
-        self, args: tuple[Any, ...], kwargs: MutableMapping[str, Any]
-    ) -> MetaMapping | None:
-        if "_meta" in kwargs and isinstance(kwargs["_meta"], Mapping):
-            return kwargs["_meta"]
-        if "meta" in kwargs and isinstance(kwargs["meta"], Mapping):
-            return kwargs["meta"]
-        for value in args:
-            if (
-                isinstance(value, Mapping)
-                and "_meta" in value
-                and isinstance(value["_meta"], Mapping)
-            ):
-                return value["_meta"]
-            if hasattr(value, "_meta"):
-                candidate = value._meta
-                if isinstance(candidate, Mapping):
-                    return candidate
-        return None
-
-    def _apply_attributes(self, span: Span, attributes: Mapping[str, Any]) -> None:
-        for key, value in attributes.items():
-            span.set_attribute(key, value)
-
 
 def instrument_fastmcp(
     app: Any,
     *,
     middleware: FastMCPTracingMiddleware | None = None,
-    register: Callable[[FastMCPTracingMiddleware], None] | None = None,
     **middleware_kwargs: Any,
 ) -> FastMCPTracingMiddleware:
     """Attach the tracing middleware to a FastMCP server instance.
 
-    The concrete FastMCP API is evolving quickly.  To avoid hard-coding
-    implementation details we accept an optional ``register`` callback that is
-    responsible for wiring the middleware into the application.  When the
-    callback is omitted the function will attempt a few common registration
-    patterns used by FastMCP versions released at the time of writing:
+    This function registers the hook-based middleware with FastMCP using the
+    standard ``app.add_middleware()`` method. The middleware will automatically
+    trace all tool invocations with OpenTelemetry spans.
 
-    * An ``app.middleware.add`` callable attribute.
-    * An ``app.add_middleware`` method that accepts instantiated middleware.
+    Compatible with FastMCP 2.9+.
 
     Parameters
     ----------
     app:
         FastMCP server instance.
     middleware:
-        Optional pre-constructed middleware.  When omitted one will be created
+        Optional pre-constructed middleware. When omitted, one will be created
         using ``middleware_kwargs``.
-    register:
-        Optional callback responsible for adding the middleware to ``app``.
     middleware_kwargs:
         Keyword arguments forwarded to :class:`FastMCPTracingMiddleware` when the
         middleware needs to be constructed by this helper.
-    """
 
+    Returns
+    -------
+    FastMCPTracingMiddleware
+        The middleware instance that was registered.
+
+    Raises
+    ------
+    TypeError
+        If the app doesn't have an ``add_middleware`` method.
+
+    Examples
+    --------
+    Basic usage::
+
+        from fastmcp import FastMCP
+        from fastmcp_otel_middleware import instrument_fastmcp
+
+        app = FastMCP("MyServer")
+        instrument_fastmcp(app)
+
+    With custom configuration::
+
+        instrument_fastmcp(
+            app,
+            span_name_prefix="tool.",
+            include_arguments=True
+        )
+    """
     tracing_middleware = middleware or FastMCPTracingMiddleware(**middleware_kwargs)
 
-    if register is not None:
-        register(tracing_middleware)
-        return tracing_middleware
-
-    add_attr = getattr(app, "middleware", None)
-    if callable(add_attr):
-        add_attr(tracing_middleware)
-        return tracing_middleware
-    if hasattr(add_attr, "add") and callable(add_attr.add):
-        add_attr.add(tracing_middleware)
-        return tracing_middleware
-
+    # Use the standard FastMCP 2.9+ middleware registration method
     add_middleware = getattr(app, "add_middleware", None)
     if callable(add_middleware):
         add_middleware(tracing_middleware)
         return tracing_middleware
 
     raise TypeError(
-        "Unable to determine how to register middleware with the provided app. "
-        "Pass a `register` callback or upgrade FastMCP to a supported version."
+        f"The provided app does not have an 'add_middleware' method. "
+        f"This middleware requires FastMCP 2.9 or later. "
+        f"Got app type: {type(app)}"
     )
