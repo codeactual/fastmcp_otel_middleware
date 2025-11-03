@@ -1,4 +1,5 @@
 """Stub propagate module with a global textmap propagator."""
+
 from __future__ import annotations
 
 from ..propagators.textmap import TextMapPropagator
@@ -14,4 +15,3 @@ def get_global_textmap() -> TextMapPropagator:
 def set_global_textmap(propagator: TextMapPropagator) -> None:
     global _global_textmap
     _global_textmap = propagator
-

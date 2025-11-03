@@ -1,11 +1,12 @@
 """Very small W3C trace context propagator implementation."""
+
 from __future__ import annotations
 
-from typing import MutableMapping, Optional
+from typing import MutableMapping
 
+from ... import context as context_api
 from ...propagators.textmap import DictSetter, Getter, TextMapPropagator
 from .. import NonRecordingSpan, SpanContext, TraceFlags, TraceState
-from ... import context as context_api
 
 
 class TraceContextTextMapPropagator(TextMapPropagator):
@@ -14,7 +15,9 @@ class TraceContextTextMapPropagator(TextMapPropagator):
     def __init__(self):
         self._setter = DictSetter()
 
-    def extract(self, carrier: Optional[MutableMapping[str, str]], getter: Getter) -> context_api.Context:
+    def extract(
+        self, carrier: MutableMapping[str, str] | None, getter: Getter
+    ) -> context_api.Context:
         if carrier is None:
             return context_api.Context()
         values = getter.get(carrier, self.TRACEPARENT_HEADER)
@@ -43,4 +46,3 @@ class TraceContextTextMapPropagator(TextMapPropagator):
         span_context = span.get_span_context()
         traceparent = f"00-{span_context.trace_id:032x}-{span_context.span_id:016x}-01"
         self._setter.set(carrier, self.TRACEPARENT_HEADER, traceparent)
-
