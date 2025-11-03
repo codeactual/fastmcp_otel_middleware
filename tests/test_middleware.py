@@ -18,8 +18,6 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from fastmcp_otel_middleware.middleware import (
     FastMCPTracingMiddleware,
     MetaCarrierGetter,
-    default_attributes_factory,
-    default_span_name_factory,
     get_context_from_meta,
     instrument_fastmcp,
 )
@@ -49,6 +47,27 @@ def parent_context():
     return span_context, {"otel": carrier}
 
 
+# Mock objects for testing the hook-based middleware pattern
+class MockToolCallMessage:
+    """Mock FastMCP tool call message."""
+
+    def __init__(self, name: str, arguments: dict | None = None, meta: dict | None = None):
+        self.name = name
+        self.arguments = arguments
+        self._meta = meta
+
+
+class MockMiddlewareContext:
+    """Mock FastMCP middleware context."""
+
+    def __init__(
+        self, message: MockToolCallMessage, method: str = "tools/call", source: str = "client"
+    ):
+        self.message = message
+        self.method = method
+        self.source = source
+
+
 def test_meta_carrier_getter_reads_nested_fields(parent_context):
     _, meta = parent_context
     meta["otel"]["traceParent"] = meta["otel"].pop("traceparent")
@@ -74,12 +93,16 @@ def test_middleware_creates_span_with_parent(tracer_provider, parent_context):
     parent_span_context, meta = parent_context
     middleware = FastMCPTracingMiddleware(tracer=tracer)
 
-    async def call_next(*args, **kwargs):
-        # The extracted context should be active while the handler runs.
+    # Create mock context with the tool call message
+    message = MockToolCallMessage(name="my-tool", arguments={"arg1": "value1"}, meta=meta)
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
+        # The extracted context should be active while the handler runs
         assert trace.get_current_span().get_span_context().is_valid
         return "result"
 
-    result = asyncio.run(middleware(call_next, tool_name="my-tool", call_id="123", _meta=meta))
+    result = asyncio.run(middleware.on_call_tool(ctx, call_next))
 
     assert result == "result"
     finished_spans = exporter.get_finished_spans()
@@ -89,7 +112,8 @@ def test_middleware_creates_span_with_parent(tracer_provider, parent_context):
     assert span.parent is not None
     assert span.parent.span_id == parent_span_context.span_id
     assert span.attributes["fastmcp.tool.name"] == "my-tool"
-    assert span.attributes["fastmcp.tool.call_id"] == "123"
+    assert span.attributes["mcp.method"] == "tools/call"
+    assert span.attributes["mcp.source"] == "client"
     assert span.attributes["fastmcp.tool.success"] is True
     assert span.kind.name == "SERVER"
 
@@ -100,11 +124,15 @@ def test_middleware_records_exceptions(tracer_provider, parent_context):
     _, meta = parent_context
     middleware = FastMCPTracingMiddleware(tracer=tracer)
 
-    async def call_next(*args, **kwargs):
+    # Create mock context
+    message = MockToolCallMessage(name="error-tool", meta=meta)
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
         raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError):
-        asyncio.run(middleware(call_next, tool_name="error-tool", _meta=meta))
+        asyncio.run(middleware.on_call_tool(ctx, call_next))
 
     finished_spans = exporter.get_finished_spans()
     assert len(finished_spans) == 1
@@ -113,64 +141,53 @@ def test_middleware_records_exceptions(tracer_provider, parent_context):
     assert span.attributes["fastmcp.tool.success"] is False
 
 
-def test_middleware_uses_factories(tracer_provider):
+def test_middleware_with_custom_configuration(tracer_provider):
     provider, exporter = tracer_provider
     tracer = provider.get_tracer(__name__)
     middleware = FastMCPTracingMiddleware(
         tracer=tracer,
-        span_name_factory=lambda args, kwargs: "custom-span",
-        attributes_factory=lambda args, kwargs: {"extra": "value"},
+        span_name_prefix="tool.",
         record_successful_result=False,
+        include_arguments=True,
     )
 
-    async def call_next(*args, **kwargs):
+    # Create mock context
+    message = MockToolCallMessage(name="test_tool", arguments={"key": "value"})
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
         return "ok"
 
-    asyncio.run(middleware(call_next, 123, name="tool", call_id="cid"))
+    asyncio.run(middleware.on_call_tool(ctx, call_next))
 
     span = exporter.get_finished_spans()[0]
-    assert span.name == "custom-span"
-    assert span.attributes["extra"] == "value"
+    assert span.name == "tool.test_tool"
+    assert span.attributes["fastmcp.tool.arguments"] == "{'key': 'value'}"
     assert "fastmcp.tool.success" not in span.attributes
 
 
-def test_default_span_name_factory_prefers_kwargs():
-    assert default_span_name_factory(tuple(), {"tool_name": "first"}) == "first"
-    assert default_span_name_factory(tuple(), {"name": "second"}) == "second"
-
-    class Obj:
-        name = "attr"
-
-    assert default_span_name_factory((Obj(),), {}) == "attr"
-
-
-def test_default_attributes_factory_extracts_fields():
-    attrs = default_attributes_factory(
-        tuple(), {"tool_name": "tn", "call_id": "cid", "namespace": "ns"}
-    )
-    assert attrs == {
-        "fastmcp.tool.name": "tn",
-        "fastmcp.tool.call_id": "cid",
-        "fastmcp.tool.namespace": "ns",
-    }
-
-
-def test_instrument_fastmcp_supports_various_registration_paths():
-    class MiddlewareContainer:
-        def __init__(self):
-            self.added = []
-
-        def add(self, middleware):
-            self.added.append(middleware)
-
+def test_instrument_fastmcp_registers_middleware():
     class App:
         def __init__(self):
-            self.middleware = MiddlewareContainer()
-            self.add_middleware = self.middleware.add
+            self.middleware_list = []
+
+        def add_middleware(self, middleware):
+            self.middleware_list.append(middleware)
 
     app = App()
 
-    middleware = instrument_fastmcp(app, record_successful_result=False)
+    middleware = instrument_fastmcp(app, record_successful_result=False, span_name_prefix="mcp.")
 
-    assert middleware in app.middleware.added
+    assert middleware in app.middleware_list
     assert middleware.record_successful_result is False
+    assert middleware.span_name_prefix == "mcp."
+
+
+def test_instrument_fastmcp_raises_on_incompatible_app():
+    class IncompatibleApp:
+        pass
+
+    app = IncompatibleApp()
+
+    with pytest.raises(TypeError, match="does not have an 'add_middleware' method"):
+        instrument_fastmcp(app)
