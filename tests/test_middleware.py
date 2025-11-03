@@ -111,10 +111,19 @@ def test_middleware_creates_span_with_parent(tracer_provider, parent_context):
     assert span.name == "my-tool"
     assert span.parent is not None
     assert span.parent.span_id == parent_span_context.span_id
+
+    # Check standard OpenTelemetry attributes
     assert span.attributes["fastmcp.tool.name"] == "my-tool"
     assert span.attributes["mcp.method"] == "tools/call"
     assert span.attributes["mcp.source"] == "client"
     assert span.attributes["fastmcp.tool.success"] is True
+
+    # Check Langfuse-compatible attributes (prefixed for queryability)
+    assert span.attributes["langfuse.observation.metadata.tool_name"] == "my-tool"
+    assert span.attributes["langfuse.observation.metadata.mcp_method"] == "tools/call"
+    assert span.attributes["langfuse.observation.metadata.mcp_source"] == "client"
+    assert span.attributes["langfuse.observation.metadata.tool_success"] is True
+
     assert span.kind.name == "SERVER"
 
 
