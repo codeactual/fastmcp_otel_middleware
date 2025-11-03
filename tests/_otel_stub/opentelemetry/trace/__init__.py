@@ -1,11 +1,12 @@
 """Simplified tracing implementation for tests."""
+
 from __future__ import annotations
 
 import itertools
 from contextlib import ContextDecorator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any
 
 from .. import context as context_api
 
@@ -70,7 +71,7 @@ class NonRecordingSpan:
 
 
 class Span:
-    def __init__(self, name: str, context: SpanContext, parent: Optional[SpanContext], kind: SpanKind):
+    def __init__(self, name: str, context: SpanContext, parent: SpanContext | None, kind: SpanKind):
         self.name = name
         self._context = context
         self.parent = parent
@@ -96,7 +97,7 @@ class Span:
 
 
 class _SpanContextManager(ContextDecorator):
-    def __init__(self, span: Span, token: int, tracer: "Tracer"):
+    def __init__(self, span: Span, token: int, tracer: Tracer):
         self._span = span
         self._token = token
         self._tracer = tracer
@@ -111,7 +112,7 @@ class _SpanContextManager(ContextDecorator):
 
 
 class Tracer:
-    def __init__(self, provider: "TracerProvider", name: str):
+    def __init__(self, provider: TracerProvider, name: str):
         self._provider = provider
         self._name = name
 
@@ -119,10 +120,10 @@ class Tracer:
         self,
         name: str,
         *,
-        context: Optional[context_api.Context] = None,
+        context: context_api.Context | None = None,
         kind: SpanKind | None = None,
     ) -> _SpanContextManager:
-        parent_span_context: Optional[SpanContext] = None
+        parent_span_context: SpanContext | None = None
         if context and getattr(context, "span", None):
             parent_span = context.span
             if hasattr(parent_span, "get_span_context"):
@@ -142,16 +143,16 @@ class Tracer:
 
 class TracerProvider:
     def __init__(self):
-        self._span_processors: List[Any] = []
+        self._span_processors: list[Any] = []
         self._id_iter = itertools.count(1)
 
     def add_span_processor(self, processor: Any) -> None:
         self._span_processors.append(processor)
 
-    def get_tracer(self, name: str, version: Optional[str] = None) -> Tracer:
+    def get_tracer(self, name: str, version: str | None = None) -> Tracer:
         return Tracer(self, name)
 
-    def _next_span_context(self, parent: Optional[SpanContext]) -> SpanContext:
+    def _next_span_context(self, parent: SpanContext | None) -> SpanContext:
         span_id = next(self._id_iter)
         if parent is None:
             trace_id = span_id << 64 | span_id
@@ -176,7 +177,7 @@ def get_tracer_provider() -> TracerProvider:
     return _global_tracer_provider
 
 
-def get_tracer(name: str, version: Optional[str] = None) -> Tracer:
+def get_tracer(name: str, version: str | None = None) -> Tracer:
     return _global_tracer_provider.get_tracer(name, version)
 
 
@@ -187,4 +188,3 @@ def get_current_span() -> Span | None:
 
 def set_span_in_context(span: Any) -> context_api.Context:
     return context_api.Context(span=span)
-

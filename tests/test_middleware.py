@@ -79,9 +79,7 @@ def test_middleware_creates_span_with_parent(tracer_provider, parent_context):
         assert trace.get_current_span().get_span_context().is_valid
         return "result"
 
-    result = asyncio.run(
-        middleware(call_next, tool_name="my-tool", call_id="123", _meta=meta)
-    )
+    result = asyncio.run(middleware(call_next, tool_name="my-tool", call_id="123", _meta=meta))
 
     assert result == "result"
     finished_spans = exporter.get_finished_spans()
@@ -147,7 +145,9 @@ def test_default_span_name_factory_prefers_kwargs():
 
 
 def test_default_attributes_factory_extracts_fields():
-    attrs = default_attributes_factory(tuple(), {"tool_name": "tn", "call_id": "cid", "namespace": "ns"})
+    attrs = default_attributes_factory(
+        tuple(), {"tool_name": "tn", "call_id": "cid", "namespace": "ns"}
+    )
     assert attrs == {
         "fastmcp.tool.name": "tn",
         "fastmcp.tool.call_id": "cid",
@@ -174,4 +174,3 @@ def test_instrument_fastmcp_supports_various_registration_paths():
 
     assert middleware in app.middleware.added
     assert middleware.record_successful_result is False
-

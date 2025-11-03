@@ -20,7 +20,7 @@ Langfuse MCP tracing example referenced in the module README.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Iterable, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 from opentelemetry import context, trace
 from opentelemetry.context import Context
@@ -52,7 +52,7 @@ class MetaCarrierGetter(Getter[MetaMapping]):
         "baggage": ("baggage", "Baggage", "BAGGAGE"),
     }
 
-    def get(self, carrier: Optional[MetaMapping], key: str) -> Sequence[str]:
+    def get(self, carrier: MetaMapping | None, key: str) -> Sequence[str]:
         if not carrier:
             return []
         normalized_key = key.lower()
@@ -63,7 +63,7 @@ class MetaCarrierGetter(Getter[MetaMapping]):
                 values.extend(self._coerce_to_strings(value))
         return values
 
-    def keys(self, carrier: Optional[MetaMapping]) -> Iterable[str]:
+    def keys(self, carrier: MetaMapping | None) -> Iterable[str]:
         if not carrier:
             return []
         keys: set[str] = set()
@@ -106,9 +106,9 @@ class MetaCarrierGetter(Getter[MetaMapping]):
 
 
 def get_context_from_meta(
-    meta: Optional[MetaMapping],
-    propagator: Optional[TextMapPropagator] = None,
-    getter: Optional[MetaCarrierGetter] = None,
+    meta: MetaMapping | None,
+    propagator: TextMapPropagator | None = None,
+    getter: MetaCarrierGetter | None = None,
 ) -> Context:
     """Extract an OpenTelemetry context from an MCP `_meta` carrier."""
 
@@ -192,11 +192,11 @@ class FastMCPTracingMiddleware:
         re-raising the exception.
     """
 
-    tracer: Optional[Tracer] = None
+    tracer: Tracer | None = None
     span_name_factory: SpanNameFactory = default_span_name_factory
     attributes_factory: AttributesFactory = default_attributes_factory
-    propagator: Optional[TextMapPropagator] = None
-    getter: Optional[MetaCarrierGetter] = None
+    propagator: TextMapPropagator | None = None
+    getter: MetaCarrierGetter | None = None
     span_kind: SpanKind = SpanKind.SERVER
     record_successful_result: bool = True
     record_tool_exceptions: bool = True
@@ -210,14 +210,18 @@ class FastMCPTracingMiddleware:
         attributes = dict(self.attributes_factory(args, kwargs) or {})
 
         try:
-            with tracer.start_as_current_span(span_name, context=parent_context, kind=self.span_kind) as span:
+            with tracer.start_as_current_span(
+                span_name, context=parent_context, kind=self.span_kind
+            ) as span:
                 self._apply_attributes(span, attributes)
                 try:
                     result = await call_next(*args, **kwargs)
                     if self.record_successful_result:
                         span.set_attribute("fastmcp.tool.success", True)
                     return result
-                except Exception as exc:  # pragma: no cover - defensive, fastmcp handles this upstream
+                except (
+                    Exception
+                ) as exc:  # pragma: no cover - defensive, fastmcp handles this upstream
                     if self.record_tool_exceptions:
                         span.record_exception(exc)
                         span.set_status(Status(StatusCode.ERROR, str(exc)))
@@ -228,16 +232,22 @@ class FastMCPTracingMiddleware:
 
     # -- private helpers -------------------------------------------------
 
-    def _extract_meta(self, args: tuple[Any, ...], kwargs: MutableMapping[str, Any]) -> Optional[MetaMapping]:
+    def _extract_meta(
+        self, args: tuple[Any, ...], kwargs: MutableMapping[str, Any]
+    ) -> MetaMapping | None:
         if "_meta" in kwargs and isinstance(kwargs["_meta"], Mapping):
             return kwargs["_meta"]
         if "meta" in kwargs and isinstance(kwargs["meta"], Mapping):
             return kwargs["meta"]
         for value in args:
-            if isinstance(value, Mapping) and "_meta" in value and isinstance(value["_meta"], Mapping):
+            if (
+                isinstance(value, Mapping)
+                and "_meta" in value
+                and isinstance(value["_meta"], Mapping)
+            ):
                 return value["_meta"]
             if hasattr(value, "_meta"):
-                candidate = getattr(value, "_meta")
+                candidate = value._meta
                 if isinstance(candidate, Mapping):
                     return candidate
         return None
@@ -250,8 +260,8 @@ class FastMCPTracingMiddleware:
 def instrument_fastmcp(
     app: Any,
     *,
-    middleware: Optional[FastMCPTracingMiddleware] = None,
-    register: Optional[Callable[[FastMCPTracingMiddleware], None]] = None,
+    middleware: FastMCPTracingMiddleware | None = None,
+    register: Callable[[FastMCPTracingMiddleware], None] | None = None,
     **middleware_kwargs: Any,
 ) -> FastMCPTracingMiddleware:
     """Attach the tracing middleware to a FastMCP server instance.

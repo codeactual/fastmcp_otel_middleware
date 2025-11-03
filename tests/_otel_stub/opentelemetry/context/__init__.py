@@ -1,8 +1,9 @@
 """Simplified context management used by the FastMCP tests."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any
 
 
 @dataclass
@@ -10,7 +11,7 @@ class Context:
     span: Any | None = None
 
 
-_current_stack: List[Context] = [Context()]
+_current_stack: list[Context] = [Context()]
 
 
 def get_current() -> Context:
@@ -33,4 +34,3 @@ def detach(token: int) -> None:
         del _current_stack[token:]
         if not _current_stack:
             _current_stack.append(Context())
-

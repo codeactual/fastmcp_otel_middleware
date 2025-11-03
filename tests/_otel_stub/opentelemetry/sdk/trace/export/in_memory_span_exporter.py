@@ -1,17 +1,16 @@
 """Minimal in-memory span exporter stub."""
-from __future__ import annotations
 
-from typing import List
+from __future__ import annotations
 
 
 class InMemorySpanExporter:
     def __init__(self):
-        self._finished: List[object] = []
+        self._finished: list[object] = []
 
-    def export(self, spans: List[object]) -> None:
+    def export(self, spans: list[object]) -> None:
         self._finished.extend(spans)
 
-    def get_finished_spans(self) -> List[object]:
+    def get_finished_spans(self) -> list[object]:
         return list(self._finished)
 
     def clear(self) -> None:
