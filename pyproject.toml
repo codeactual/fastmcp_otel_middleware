@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fastmcp-otel-middleware"
+version = "0.1.0"
+description = "OpenTelemetry middleware for FastMCP servers"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "opentelemetry-api>=1.0.0",
+    "opentelemetry-sdk>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fastmcp_otel_middleware*"]
+exclude = ["tests*"]
