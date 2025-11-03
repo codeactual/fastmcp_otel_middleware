@@ -11,13 +11,9 @@ This package contains lightweight utilities for wiring [OpenTelemetry](https://o
 
 ## Installation
 
-Add the directory to your Python path or package it with your FastMCP server.  The package has no runtime dependency on `fastmcp` to keep it lightweight, but it does require the OpenTelemetry API package:
-
 ```bash
-pip install opentelemetry-api
+ uv add https://github.com/codeactual/fastmcp_otel_middleware.git
 ```
-
-Depending on your exporter you may also want `opentelemetry-sdk` and the exporter implementation of your choice (OTLP, Jaeger, etc.).
 
 ## Usage
 
