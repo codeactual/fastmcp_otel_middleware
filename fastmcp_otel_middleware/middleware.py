@@ -291,6 +291,7 @@ class FastMCPTracingMiddleware:
 
         # Also set Langfuse-prefixed attribute if configured
         if self.langfuse_compatible and langfuse_name:
+            span.set_attribute("langfuse.observation.type", "tool")
             span.set_attribute(f"langfuse.observation.metadata.{langfuse_name}", value)
 
 
