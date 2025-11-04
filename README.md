@@ -31,6 +31,7 @@ instrument_fastmcp(
     app,
     span_name_prefix="tool.",  # Creates spans like "tool.get_temperature"
     include_arguments=True,     # Include tool arguments in span attributes
+    langfuse_compatible=True,   # Enable Langfuse-prefixed metadata (disabled by default)
 )
 ```
 
@@ -42,6 +43,11 @@ handler invocation with a server span. The span automatically includes:
 - **MCP metadata**: `mcp.method` and `mcp.source` attributes
 - **Success status**: `fastmcp.tool.success` indicating if the call succeeded
 - **Arguments** (optional): `fastmcp.tool.arguments` if `include_arguments=True`
+
+Enable the `langfuse_compatible` option when you need Langfuse-prefixed metadata
+fields (for example, to make attributes queryable in the Langfuse UI). The
+middleware leaves these attributes out by default to keep traces lean for other
+exporters.
 
 ## Extracting Context Manually
 

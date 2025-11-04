@@ -91,7 +91,7 @@ def test_middleware_creates_span_with_parent(tracer_provider, parent_context):
     provider, exporter = tracer_provider
     tracer = provider.get_tracer(__name__)
     parent_span_context, meta = parent_context
-    middleware = FastMCPTracingMiddleware(tracer=tracer)
+    middleware = FastMCPTracingMiddleware(tracer=tracer, langfuse_compatible=True)
 
     # Create mock context with the tool call message
     message = MockToolCallMessage(name="my-tool", arguments={"arg1": "value1"}, meta=meta)
@@ -111,11 +111,41 @@ def test_middleware_creates_span_with_parent(tracer_provider, parent_context):
     assert span.name == "my-tool"
     assert span.parent is not None
     assert span.parent.span_id == parent_span_context.span_id
+
+    # Check standard OpenTelemetry attributes
     assert span.attributes["fastmcp.tool.name"] == "my-tool"
     assert span.attributes["mcp.method"] == "tools/call"
     assert span.attributes["mcp.source"] == "client"
     assert span.attributes["fastmcp.tool.success"] is True
+
+    # Check Langfuse-compatible attributes (prefixed for queryability)
+    assert span.attributes["langfuse.observation.metadata.tool_name"] == "my-tool"
+    assert span.attributes["langfuse.observation.metadata.mcp_method"] == "tools/call"
+    assert span.attributes["langfuse.observation.metadata.mcp_source"] == "client"
+    assert span.attributes["langfuse.observation.metadata.tool_success"] is True
+
     assert span.kind.name == "SERVER"
+
+
+def test_middleware_omits_langfuse_attributes_by_default(tracer_provider, parent_context):
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    _, meta = parent_context
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    message = MockToolCallMessage(name="default-tool", meta=meta)
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
+        return "result"
+
+    asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 1
+    span = finished_spans[0]
+    assert span.attributes["fastmcp.tool.name"] == "default-tool"
+    assert not any(key.startswith("langfuse.") for key in span.attributes)
 
 
 def test_middleware_records_exceptions(tracer_provider, parent_context):

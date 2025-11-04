@@ -176,6 +176,10 @@ class FastMCPTracingMiddleware:
     include_arguments:
         When True, include stringified tool arguments in span attributes as
         "fastmcp.tool.arguments". Default is False to avoid leaking sensitive data.
+    langfuse_compatible:
+        When True, also set attributes with "langfuse.observation.metadata."
+        prefix to make them queryable in Langfuse UI. Disabled by default to keep
+        the attribute set minimal; enable when exporting to Langfuse.
     """
 
     tracer: Tracer | None = None
@@ -186,6 +190,7 @@ class FastMCPTracingMiddleware:
     record_successful_result: bool = True
     record_tool_exceptions: bool = True
     include_arguments: bool = False
+    langfuse_compatible: bool = False
 
     async def on_call_tool(self, ctx: MiddlewareContext, call_next: CallNext) -> Any:
         """Handle tool call requests with OpenTelemetry tracing.
@@ -228,20 +233,27 @@ class FastMCPTracingMiddleware:
                 span_name, context=parent_context, kind=self.span_kind
             ) as span:
                 # Add span attributes
-                span.set_attribute("fastmcp.tool.name", tool_name)
+                self._set_attribute(span, "fastmcp.tool.name", tool_name, langfuse_name="tool_name")
+
                 if ctx.method:
-                    span.set_attribute("mcp.method", ctx.method)
-                span.set_attribute("mcp.source", ctx.source)
+                    self._set_attribute(span, "mcp.method", ctx.method, langfuse_name="mcp_method")
+
+                self._set_attribute(span, "mcp.source", ctx.source, langfuse_name="mcp_source")
 
                 if self.include_arguments and ctx.message.arguments:
-                    span.set_attribute("fastmcp.tool.arguments", str(ctx.message.arguments))
+                    args_str = str(ctx.message.arguments)
+                    self._set_attribute(
+                        span, "fastmcp.tool.arguments", args_str, langfuse_name="tool_arguments"
+                    )
 
                 try:
                     # Call the next middleware or tool handler
                     result = await call_next(ctx)
 
                     if self.record_successful_result:
-                        span.set_attribute("fastmcp.tool.success", True)
+                        self._set_attribute(
+                            span, "fastmcp.tool.success", True, langfuse_name="tool_success"
+                        )
 
                     return result
 
@@ -249,10 +261,37 @@ class FastMCPTracingMiddleware:
                     if self.record_tool_exceptions:
                         span.record_exception(exc)
                         span.set_status(Status(StatusCode.ERROR, str(exc)))
-                        span.set_attribute("fastmcp.tool.success", False)
+                        self._set_attribute(
+                            span, "fastmcp.tool.success", False, langfuse_name="tool_success"
+                        )
                     raise
         finally:
             context.detach(token)
+
+    def _set_attribute(
+        self, span: Any, name: str, value: Any, langfuse_name: str | None = None
+    ) -> None:
+        """Set a span attribute, optionally with Langfuse-compatible prefix.
+
+        Parameters
+        ----------
+        span:
+            The OpenTelemetry span to set the attribute on.
+        name:
+            Standard attribute name (e.g., "fastmcp.tool.name").
+        value:
+            The attribute value.
+        langfuse_name:
+            Optional simplified name for Langfuse metadata (e.g., "tool_name").
+            If provided and langfuse_compatible is True, also sets the attribute
+            with "langfuse.observation.metadata." prefix for Langfuse queryability.
+        """
+        # Always set the standard attribute for compatibility with other OTel tools
+        span.set_attribute(name, value)
+
+        # Also set Langfuse-prefixed attribute if configured
+        if self.langfuse_compatible and langfuse_name:
+            span.set_attribute(f"langfuse.observation.metadata.{langfuse_name}", value)
 
 
 def instrument_fastmcp(
