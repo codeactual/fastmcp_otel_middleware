@@ -177,9 +177,9 @@ class FastMCPTracingMiddleware:
         When True, include stringified tool arguments in span attributes as
         "fastmcp.tool.arguments". Default is False to avoid leaking sensitive data.
     langfuse_compatible:
-        When True (default), also set attributes with "langfuse.observation.metadata."
-        prefix to make them queryable in Langfuse UI. Standard OTel attributes are
-        always set for compatibility with other observability tools.
+        When True, also set attributes with "langfuse.observation.metadata."
+        prefix to make them queryable in Langfuse UI. Disabled by default to keep
+        the attribute set minimal; enable when exporting to Langfuse.
     """
 
     tracer: Tracer | None = None
@@ -190,7 +190,7 @@ class FastMCPTracingMiddleware:
     record_successful_result: bool = True
     record_tool_exceptions: bool = True
     include_arguments: bool = False
-    langfuse_compatible: bool = True
+    langfuse_compatible: bool = False
 
     async def on_call_tool(self, ctx: MiddlewareContext, call_next: CallNext) -> Any:
         """Handle tool call requests with OpenTelemetry tracing.

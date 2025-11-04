@@ -48,7 +48,11 @@ def test_attribute_export():
         tracer = provider.get_tracer(__name__)
 
         # Create middleware
-        middleware = FastMCPTracingMiddleware(tracer=tracer, include_arguments=True)
+        middleware = FastMCPTracingMiddleware(
+            tracer=tracer,
+            include_arguments=True,
+            langfuse_compatible=True,  # Opt-in (disabled by default)
+        )
 
         # Create mock context
         message = MockToolCallMessage(
