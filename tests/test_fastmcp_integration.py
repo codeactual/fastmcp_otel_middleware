@@ -1,28 +1,21 @@
 """Integration test using FastMCP's in-memory server to reproduce middleware issues.
 
-This test requires the fastmcp package to be installed. If fastmcp is not available,
-the tests will be skipped. This is intentional because the middleware is designed to
-be lightweight and not depend on fastmcp directly (it uses duck typing).
+This test requires the fastmcp package to be installed, which is included in the dev
+dependencies. The middleware itself does not depend on fastmcp (it uses duck typing),
+but we test against real FastMCP servers to ensure compatibility.
 
-To run these tests locally:
-    pip install fastmcp
+To run these tests:
+    pip install -e ".[dev]"
     pytest tests/test_fastmcp_integration.py -v
 """
 
 import pytest
+from fastmcp import Client, FastMCP
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from fastmcp_otel_middleware import instrument_fastmcp
-
-# Skip all tests in this module if fastmcp is not installed
-# This is intentional - the middleware doesn't depend on fastmcp
-fastmcp = pytest.importorskip("fastmcp", reason="fastmcp not installed")
-
-# Import after the importorskip check
-FastMCP = fastmcp.FastMCP
-Client = fastmcp.Client
 
 
 @pytest.fixture()

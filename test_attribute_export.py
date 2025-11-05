@@ -4,7 +4,6 @@ import asyncio
 import json
 import textwrap
 
-import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -35,7 +34,6 @@ class MockMiddlewareContext:
         self.source = source
 
 
-@pytest.mark.asyncio
 def test_attribute_export():
     """Test that span attributes are properly set and exported."""
 
