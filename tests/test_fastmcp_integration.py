@@ -1,13 +1,28 @@
-"""Integration test using FastMCP's in-memory server to reproduce middleware issues."""
+"""Integration test using FastMCP's in-memory server to reproduce middleware issues.
+
+This test requires the fastmcp package to be installed. If fastmcp is not available,
+the tests will be skipped. This is intentional because the middleware is designed to
+be lightweight and not depend on fastmcp directly (it uses duck typing).
+
+To run these tests locally:
+    pip install fastmcp
+    pytest tests/test_fastmcp_integration.py -v
+"""
 
 import pytest
-from fastmcp import FastMCP
-from mcp.client import Client
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from fastmcp_otel_middleware import instrument_fastmcp
+
+# Skip all tests in this module if fastmcp is not installed
+# This is intentional - the middleware doesn't depend on fastmcp
+fastmcp = pytest.importorskip("fastmcp", reason="fastmcp not installed")
+
+# Import after the importorskip check
+FastMCP = fastmcp.FastMCP
+Client = fastmcp.Client
 
 
 @pytest.fixture()
@@ -30,6 +45,7 @@ async def test_middleware_with_in_memory_server(tracer_provider):
     when fastmcp tries to call the middleware for initialize and other methods.
     """
     provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
 
     # Create a FastMCP server with a simple tool
     mcp = FastMCP("TestServer")
@@ -42,6 +58,7 @@ async def test_middleware_with_in_memory_server(tracer_provider):
     # Instrument the server with the middleware
     instrument_fastmcp(
         mcp,
+        tracer=tracer,
         span_name_prefix="tool.",
         include_arguments=True,
         langfuse_compatible=True,
@@ -87,6 +104,7 @@ async def test_middleware_handles_non_tool_methods(tracer_provider):
     initialize, list_tools, etc.
     """
     provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
 
     mcp = FastMCP("TestServer")
 
@@ -95,7 +113,7 @@ async def test_middleware_handles_non_tool_methods(tracer_provider):
         """A simple tool."""
         return "ok"
 
-    instrument_fastmcp(mcp, span_name_prefix="tool.")
+    instrument_fastmcp(mcp, tracer=tracer, span_name_prefix="tool.")
 
     async with Client(mcp) as client:
         # These calls should not create tool spans
