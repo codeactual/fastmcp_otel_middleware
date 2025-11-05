@@ -192,6 +192,37 @@ class FastMCPTracingMiddleware:
     include_arguments: bool = False
     langfuse_compatible: bool = False
 
+    async def __call__(self, ctx: MiddlewareContext, call_next: CallNext) -> Any:
+        """Main entry point for FastMCP middleware.
+
+        This method makes the middleware callable and dispatches to the appropriate
+        hook method based on the MCP method being invoked. FastMCP's middleware
+        system uses functools.partial to build the middleware chain, which requires
+        middleware to be callable.
+
+        For 'tools/call' methods, this dispatches to on_call_tool. For all other
+        MCP methods (initialize, list_tools, etc.), it passes through without
+        creating spans.
+
+        Parameters
+        ----------
+        ctx:
+            FastMCP middleware context containing the MCP message and metadata.
+        call_next:
+            Callable to invoke the next middleware or the final handler.
+
+        Returns
+        -------
+        Any
+            The result returned by the handler.
+        """
+        # Dispatch to on_call_tool for tool invocations
+        if ctx.method == "tools/call":
+            return await self.on_call_tool(ctx, call_next)
+
+        # For all other methods (initialize, list_tools, etc.), pass through
+        return await call_next(ctx)
+
     async def on_call_tool(self, ctx: MiddlewareContext, call_next: CallNext) -> Any:
         """Handle tool call requests with OpenTelemetry tracing.
 

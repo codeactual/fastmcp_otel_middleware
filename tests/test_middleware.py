@@ -221,3 +221,111 @@ def test_instrument_fastmcp_raises_on_incompatible_app():
 
     with pytest.raises(TypeError, match="does not have an 'add_middleware' method"):
         instrument_fastmcp(app)
+
+
+def test_middleware_call_dispatches_to_on_call_tool(tracer_provider, parent_context):
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    _, meta = parent_context
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    # Create mock context for tool call
+    message = MockToolCallMessage(name="test-tool", meta=meta)
+    ctx = MockMiddlewareContext(message=message, method="tools/call")
+
+    async def call_next(context):
+        return "tool-result"
+
+    # Call the middleware using __call__
+    result = asyncio.run(middleware(ctx, call_next))
+
+    assert result == "tool-result"
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 1
+    span = finished_spans[0]
+    assert span.name == "test-tool"
+    assert span.attributes["fastmcp.tool.name"] == "test-tool"
+
+
+def test_middleware_call_passes_through_for_non_tool_methods(tracer_provider):
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    # Create mock context for initialize method
+    message = MockToolCallMessage(name="", meta=None)
+    ctx = MockMiddlewareContext(message=message, method="initialize")
+
+    async def call_next(context):
+        return {"protocolVersion": "2025-06-18", "capabilities": {}}
+
+    # Call the middleware using __call__
+    result = asyncio.run(middleware(ctx, call_next))
+
+    # Should return the result without creating spans
+    assert result["protocolVersion"] == "2025-06-18"
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 0
+
+
+def test_middleware_call_passes_through_for_list_tools(tracer_provider):
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    # Create mock context for list_tools method
+    message = MockToolCallMessage(name="", meta=None)
+    ctx = MockMiddlewareContext(message=message, method="tools/list")
+
+    async def call_next(context):
+        return []
+
+    # Call the middleware using __call__
+    result = asyncio.run(middleware(ctx, call_next))
+
+    # Should return the result without creating spans
+    assert result == []
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 0
+
+
+def test_middleware_is_callable():
+    """Test that middleware is callable (required for functools.partial)."""
+    middleware = FastMCPTracingMiddleware()
+    assert callable(middleware)
+
+
+def test_middleware_works_with_functools_partial(tracer_provider):
+    """Test that middleware works with functools.partial (as FastMCP uses it).
+
+    This test simulates how FastMCP builds the middleware chain using
+    functools.partial, which was failing before the __call__ method was added.
+    """
+    from functools import partial
+
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    # Create mock context for tool call
+    message = MockToolCallMessage(name="partial-tool", meta=None)
+    ctx = MockMiddlewareContext(message=message, method="tools/call")
+
+    async def final_handler(context):
+        return "final-result"
+
+    # Simulate how FastMCP builds the middleware chain
+    # This would fail with "the first argument must be callable" before the fix
+    chain = partial(middleware, call_next=final_handler)
+
+    # Verify that partial worked (middleware is callable)
+    assert callable(chain)
+
+    # Call the chain
+    result = asyncio.run(chain(ctx))
+
+    assert result == "final-result"
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 1
+    span = finished_spans[0]
+    assert span.name == "partial-tool"
