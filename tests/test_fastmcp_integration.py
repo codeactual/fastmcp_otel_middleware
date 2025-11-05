@@ -1,9 +1,8 @@
 """Integration test using FastMCP's in-memory server to reproduce middleware issues."""
 
 import pytest
-from fastmcp import FastMCP, Context
+from fastmcp import FastMCP
 from mcp.client import Client
-
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
