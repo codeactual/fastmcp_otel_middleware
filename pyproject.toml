@@ -26,6 +26,9 @@ where = ["."]
 include = ["fastmcp_otel_middleware*"]
 exclude = ["tests*"]
 
+[tool.setuptools.package-data]
+fastmcp_otel_middleware = ["py.typed"]
+
 [tool.pytest.ini_options]
 markers = [
     "asyncio: mark tests that use asyncio helpers",
