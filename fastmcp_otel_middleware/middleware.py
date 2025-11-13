@@ -213,7 +213,9 @@ def _debug_log_tool_call(
                     for ns_key in getter.OTEL_NAMESPACE_KEYS:
                         nested = meta.get(ns_key)
                         if isinstance(nested, Mapping) and alias in nested:
-                            lines.append(f"  {canonical_key} (as '{ns_key}.{alias}'): {nested[alias]}")
+                            lines.append(
+                                f"  {canonical_key} (as '{ns_key}.{alias}'): {nested[alias]}"
+                            )
                             break
 
     if not otel_fields_found:
@@ -226,8 +228,8 @@ def _debug_log_tool_call(
         span = trace.get_current_span(extracted_context)
         span_context = span.get_span_context()
         if span_context.is_valid:
-            trace_id = format(span_context.trace_id, '032x')
-            span_id = format(span_context.span_id, '016x')
+            trace_id = format(span_context.trace_id, "032x")
+            span_id = format(span_context.span_id, "016x")
             lines.append(f"  Trace ID: {trace_id}")
             lines.append(f"  Span ID: {span_id}")
             lines.append(f"  Trace Flags: {span_context.trace_flags}")
