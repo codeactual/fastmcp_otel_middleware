@@ -75,17 +75,11 @@ class MockMiddlewareContext:
         message: MockToolCallMessage,
         method: str = "tools/call",
         source: str = "client",
-        use_new_api: bool = True,
     ):
         self.message = message
         self.method = method
         self.source = source
-        # Use new API by default (ctx.request_context.meta)
-        if use_new_api:
-            self.request_context = MockRequestContext(meta=message._meta)
-        else:
-            # Legacy: only ctx.message._meta is available
-            self.request_context = None
+        self.request_context = MockRequestContext(meta=message._meta)
 
 
 def test_meta_carrier_getter_reads_nested_fields(parent_context):
@@ -413,15 +407,15 @@ def test_debug_logging_when_disabled(tracer_provider, parent_context):
 
 
 def test_middleware_extracts_meta_from_request_context(tracer_provider, parent_context):
-    """Test that middleware extracts _meta from ctx.request_context.meta (new API)."""
+    """Test that middleware extracts _meta from ctx.request_context.meta."""
     provider, exporter = tracer_provider
     tracer = provider.get_tracer(__name__)
     parent_span_context, meta = parent_context
     middleware = FastMCPTracingMiddleware(tracer=tracer)
 
-    # Create context using new API (ctx.request_context.meta)
+    # Create context with _meta containing OTEL context
     message = MockToolCallMessage(name="test-tool", meta=meta)
-    ctx = MockMiddlewareContext(message=message, use_new_api=True)
+    ctx = MockMiddlewareContext(message=message)
 
     async def call_next(context):
         return "result"
@@ -433,30 +427,5 @@ def test_middleware_extracts_meta_from_request_context(tracer_provider, parent_c
     assert len(finished_spans) == 1
     span = finished_spans[0]
     # Verify parent trace is propagated
-    assert span.parent is not None
-    assert span.parent.span_id == parent_span_context.span_id
-
-
-def test_middleware_falls_back_to_legacy_meta_api(tracer_provider, parent_context):
-    """Test that middleware falls back to ctx.message._meta when request_context is not available."""
-    provider, exporter = tracer_provider
-    tracer = provider.get_tracer(__name__)
-    parent_span_context, meta = parent_context
-    middleware = FastMCPTracingMiddleware(tracer=tracer)
-
-    # Create context using legacy API (ctx.message._meta only)
-    message = MockToolCallMessage(name="test-tool", meta=meta)
-    ctx = MockMiddlewareContext(message=message, use_new_api=False)
-
-    async def call_next(context):
-        return "result"
-
-    result = asyncio.run(middleware.on_call_tool(ctx, call_next))
-
-    assert result == "result"
-    finished_spans = exporter.get_finished_spans()
-    assert len(finished_spans) == 1
-    span = finished_spans[0]
-    # Verify parent trace is propagated even with legacy API
     assert span.parent is not None
     assert span.parent.span_id == parent_span_context.span_id
