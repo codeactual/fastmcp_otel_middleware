@@ -1,4 +1,7 @@
 import asyncio
+import os
+from io import StringIO
+from unittest.mock import patch
 
 import pytest
 from opentelemetry import trace
@@ -329,3 +332,64 @@ def test_middleware_works_with_functools_partial(tracer_provider):
     assert len(finished_spans) == 1
     span = finished_spans[0]
     assert span.name == "partial-tool"
+
+
+def test_debug_logging_when_enabled(tracer_provider, parent_context):
+    """Test that debug logging outputs expected information when FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG=1."""
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    parent_span_context, meta = parent_context
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    # Create mock context with tool call message that includes _meta with OTEL fields
+    message = MockToolCallMessage(name="test-tool", arguments={"arg": "value"}, meta=meta)
+    ctx = MockMiddlewareContext(message=message, method="tools/call", source="client")
+
+    async def call_next(context):
+        return "result"
+
+    # Capture stderr output
+    stderr_capture = StringIO()
+    with patch.dict(os.environ, {"FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG": "1"}):
+        with patch("sys.stderr", stderr_capture):
+            asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    debug_output = stderr_capture.getvalue()
+
+    # Verify the debug output contains expected information
+    assert "[FASTMCP OTEL DEBUG]" in debug_output
+    assert "Tool Name: test-tool" in debug_output
+    assert "Span Name: test-tool" in debug_output
+    assert "MCP Method: tools/call" in debug_output
+    assert "MCP Source: client" in debug_output
+    assert "OTEL_FIELD_ALIASES propagated from _meta:" in debug_output
+    assert "traceparent" in debug_output
+    assert "Extracted OpenTelemetry Context:" in debug_output
+    assert "Trace ID:" in debug_output
+    assert "Raw _meta keys present:" in debug_output
+    assert "otel" in debug_output  # The _meta contains an 'otel' key
+
+
+def test_debug_logging_when_disabled(tracer_provider, parent_context):
+    """Test that no debug logging occurs when FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG is not set."""
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    _, meta = parent_context
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    message = MockToolCallMessage(name="test-tool", meta=meta)
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
+        return "result"
+
+    # Capture stderr output with debug logging disabled
+    stderr_capture = StringIO()
+    with patch.dict(os.environ, {"FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG": "0"}, clear=True):
+        with patch("sys.stderr", stderr_capture):
+            asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    debug_output = stderr_capture.getvalue()
+
+    # Verify no debug output was produced
+    assert "[FASTMCP OTEL DEBUG]" not in debug_output
