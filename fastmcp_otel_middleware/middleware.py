@@ -40,8 +40,12 @@ class ToolCallMessage(Protocol):
     name: str  # Tool name
     arguments: dict[str, Any] | None  # Tool arguments
 
+
+class RequestContext(Protocol):
+    """Protocol for FastMCP request context (available since commit 356e1f80)."""
+
     @property
-    def _meta(self) -> dict[str, Any] | None:
+    def meta(self) -> dict[str, Any] | None:
         """Optional metadata sent by the client."""
         ...
 
@@ -53,6 +57,11 @@ class MiddlewareContext(Protocol):
     method: str | None  # The MCP method (e.g., "tools/call")
     source: str  # Source of the request ("client" or "server")
 
+    @property
+    def request_context(self) -> RequestContext:
+        """Request context containing metadata (available since commit 356e1f80)."""
+        ...
+
 
 CallNext = Callable[[MiddlewareContext], Awaitable[Any]]
 
@@ -61,10 +70,12 @@ class MetaCarrierGetter(Getter[MetaMapping]):
     """Translate MCP meta dictionaries into an OpenTelemetry carrier.
 
     MCP clients send a `_meta` object that may contain OpenTelemetry headers.
+    FastMCP exposes this via ctx.request_context.meta (since commit 356e1f80).
+
     The Model Context Protocol specification intentionally mirrors HTTP
     propagation, so we expect to find fields like ``traceparent`` and
     ``baggage`` either directly on the meta dictionary or nested under an
-    ``otel`` namespace.  This getter normalises the structure for the OTel
+    ``otel`` namespace. This getter normalises the structure for the OTel
     propagator.
     """
 
@@ -150,6 +161,7 @@ def _debug_log_tool_call(
     mcp_method: str | None,
     mcp_source: str,
     extracted_context: Context,
+    meta_source: str | None = None,
 ) -> None:
     """Log debug information about tool calls when FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG=1.
 
@@ -158,6 +170,7 @@ def _debug_log_tool_call(
     - Tool name
     - Span name (how the tool name is transformed for tracing)
     - MCP method and source
+    - Meta source (where the _meta was extracted from)
     - All OTEL_FIELD_ALIASES key/value pairs propagated from _meta
     - Extracted trace/span IDs from the context
     - Raw _meta keys present in the request
@@ -176,6 +189,8 @@ def _debug_log_tool_call(
         Source of the request ("client" or "server").
     extracted_context:
         The OpenTelemetry context extracted from _meta.
+    meta_source:
+        Where the _meta was extracted from (e.g., "ctx.request_context.meta").
     """
     if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") != "1":
         return
@@ -190,6 +205,7 @@ def _debug_log_tool_call(
         f"Span Name: {span_name}",
         f"MCP Method: {mcp_method or 'N/A'}",
         f"MCP Source: {mcp_source}",
+        f"Meta Source: {meta_source or 'not found'}",
         "",
         "OTEL_FIELD_ALIASES propagated from _meta:",
     ]
@@ -238,18 +254,24 @@ def _debug_log_tool_call(
     except Exception as e:
         lines.append(f"  (error extracting context: {e})")
 
-    # Log raw _meta keys
+    # Log raw _meta information
     lines.append("")
-    lines.append("Raw _meta keys present:")
-    if meta and isinstance(meta, Mapping):
-        keys = list(meta.keys())
-        if keys:
-            for key in sorted(keys):
-                lines.append(f"  - {key}")
-        else:
-            lines.append("  (empty)")
+    lines.append("Raw _meta information:")
+    if meta is None:
+        lines.append("  _meta is None")
     else:
-        lines.append("  (no _meta)")
+        lines.append(f"  _meta type: {type(meta).__name__}")
+        lines.append(f"  _meta repr: {repr(meta)}")
+        if isinstance(meta, Mapping):
+            keys = list(meta.keys())
+            if keys:
+                lines.append("  _meta keys:")
+                for key in sorted(keys):
+                    lines.append(f"    - {key}")
+            else:
+                lines.append("  _meta is empty dict")
+        else:
+            lines.append("  _meta is not a Mapping (str/list/etc)")
 
     lines.append("=" * 80)
     lines.append("")  # Empty line for readability
@@ -264,11 +286,13 @@ class FastMCPTracingMiddleware:
 
     This middleware uses FastMCP's hook-based middleware system (introduced in v2.9)
     to provide reliable access to tool names and other MCP protocol information.
-    It extracts OpenTelemetry context from the `_meta` field, starts a server span
-    for each tool invocation, and propagates the context through the call chain.
+    It extracts OpenTelemetry context from the `_meta` field via ctx.request_context.meta,
+    starts a server span for each tool invocation, and propagates the context through
+    the call chain.
 
-    Compatible with FastMCP 2.9+. Does not depend on the fastmcp package directly,
-    using duck typing to remain lightweight and flexible.
+    Compatible with FastMCP 2.9+ with the new request_context.meta API (commit 356e1f80).
+    Does not depend on the fastmcp package directly, using duck typing to remain
+    lightweight and flexible.
 
     Parameters
     ----------
@@ -346,7 +370,7 @@ class FastMCPTracingMiddleware:
 
         This method is called by FastMCP for each tool invocation. It:
         1. Extracts the tool name from context.message.name
-        2. Extracts OpenTelemetry context from context.message._meta
+        2. Extracts OpenTelemetry context from context.request_context.meta
         3. Creates a server span for the tool invocation
         4. Calls the next handler in the middleware chain
         5. Records success/failure and returns the result
@@ -366,8 +390,21 @@ class FastMCPTracingMiddleware:
         # Extract tool name from the MCP message
         tool_name = ctx.message.name
 
-        # Extract OpenTelemetry context from _meta field
-        meta = getattr(ctx.message, "_meta", None)
+        # Extract OpenTelemetry context from _meta field via request_context
+        meta = ctx.request_context.meta
+        meta_source = "ctx.request_context.meta"
+
+        # Early debug logging to see what _meta contains
+        if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") == "1":
+            print(
+                f"[FASTMCP OTEL DEBUG] Extracting _meta:\n"
+                f"  meta source: {meta_source}\n"
+                f"  _meta value: {repr(meta)}\n"
+                f"  _meta type: {type(meta).__name__ if meta is not None else 'None'}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         parent_context = get_context_from_meta(meta, self.propagator, self.getter)
 
         # Attach the extracted context to the current task
@@ -385,6 +422,7 @@ class FastMCPTracingMiddleware:
             mcp_method=ctx.method,
             mcp_source=ctx.source,
             extracted_context=parent_context,
+            meta_source=meta_source,
         )
 
         try:

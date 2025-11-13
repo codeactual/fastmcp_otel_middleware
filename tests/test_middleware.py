@@ -60,15 +60,26 @@ class MockToolCallMessage:
         self._meta = meta
 
 
+class MockRequestContext:
+    """Mock FastMCP request context."""
+
+    def __init__(self, meta: dict | None = None):
+        self.meta = meta
+
+
 class MockMiddlewareContext:
     """Mock FastMCP middleware context."""
 
     def __init__(
-        self, message: MockToolCallMessage, method: str = "tools/call", source: str = "client"
+        self,
+        message: MockToolCallMessage,
+        method: str = "tools/call",
+        source: str = "client",
     ):
         self.message = message
         self.method = method
         self.source = source
+        self.request_context = MockRequestContext(meta=message._meta)
 
 
 def test_meta_carrier_getter_reads_nested_fields(parent_context):
@@ -393,3 +404,28 @@ def test_debug_logging_when_disabled(tracer_provider, parent_context):
 
     # Verify no debug output was produced
     assert "[FASTMCP OTEL DEBUG]" not in debug_output
+
+
+def test_middleware_extracts_meta_from_request_context(tracer_provider, parent_context):
+    """Test that middleware extracts _meta from ctx.request_context.meta."""
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    parent_span_context, meta = parent_context
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    # Create context with _meta containing OTEL context
+    message = MockToolCallMessage(name="test-tool", meta=meta)
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
+        return "result"
+
+    result = asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    assert result == "result"
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 1
+    span = finished_spans[0]
+    # Verify parent trace is propagated
+    assert span.parent is not None
+    assert span.parent.span_id == parent_span_context.span_id
