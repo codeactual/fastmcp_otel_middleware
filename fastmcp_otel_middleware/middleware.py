@@ -19,7 +19,10 @@ Langfuse MCP tracing example referenced in the module README.
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol, Sequence
 
 from opentelemetry import context, trace
@@ -140,6 +143,119 @@ def get_context_from_meta(
     return propagator.extract(carrier=meta, getter=getter)
 
 
+def _debug_log_tool_call(
+    tool_name: str,
+    meta: MetaMapping | None,
+    span_name: str,
+    mcp_method: str | None,
+    mcp_source: str,
+    extracted_context: Context,
+) -> None:
+    """Log debug information about tool calls when FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG=1.
+
+    This function logs to stderr with the following information:
+    - Timestamp (ISO 8601 format with timezone)
+    - Tool name
+    - Span name (how the tool name is transformed for tracing)
+    - MCP method and source
+    - All OTEL_FIELD_ALIASES key/value pairs propagated from _meta
+    - Extracted trace/span IDs from the context
+    - Raw _meta keys present in the request
+
+    Parameters
+    ----------
+    tool_name:
+        Name of the tool being invoked.
+    meta:
+        The _meta dictionary from the MCP message.
+    span_name:
+        The generated span name.
+    mcp_method:
+        The MCP protocol method (e.g., "tools/call").
+    mcp_source:
+        Source of the request ("client" or "server").
+    extracted_context:
+        The OpenTelemetry context extracted from _meta.
+    """
+    if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") != "1":
+        return
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    # Start building the debug output
+    lines = [
+        "=" * 80,
+        f"[FASTMCP OTEL DEBUG] {timestamp}",
+        f"Tool Name: {tool_name}",
+        f"Span Name: {span_name}",
+        f"MCP Method: {mcp_method or 'N/A'}",
+        f"MCP Source: {mcp_source}",
+        "",
+        "OTEL_FIELD_ALIASES propagated from _meta:",
+    ]
+
+    # Extract and log OTEL_FIELD_ALIASES values
+    getter = MetaCarrierGetter()
+    otel_fields_found = False
+
+    for canonical_key, aliases in getter.OTEL_FIELD_ALIASES.items():
+        values = getter.get(meta, canonical_key)
+        if values:
+            otel_fields_found = True
+            # Show which alias was actually used and its value
+            for alias in aliases:
+                if meta and isinstance(meta, Mapping):
+                    # Check root level
+                    if alias in meta:
+                        lines.append(f"  {canonical_key} (as '{alias}'): {meta[alias]}")
+                        break
+                    # Check nested otel/opentelemetry namespaces
+                    for ns_key in getter.OTEL_NAMESPACE_KEYS:
+                        nested = meta.get(ns_key)
+                        if isinstance(nested, Mapping) and alias in nested:
+                            lines.append(f"  {canonical_key} (as '{ns_key}.{alias}'): {nested[alias]}")
+                            break
+
+    if not otel_fields_found:
+        lines.append("  (none found)")
+
+    # Extract trace/span info from context
+    lines.append("")
+    lines.append("Extracted OpenTelemetry Context:")
+    try:
+        span = trace.get_current_span(extracted_context)
+        span_context = span.get_span_context()
+        if span_context.is_valid:
+            trace_id = format(span_context.trace_id, '032x')
+            span_id = format(span_context.span_id, '016x')
+            lines.append(f"  Trace ID: {trace_id}")
+            lines.append(f"  Span ID: {span_id}")
+            lines.append(f"  Trace Flags: {span_context.trace_flags}")
+        else:
+            lines.append("  (no valid span context)")
+    except Exception as e:
+        lines.append(f"  (error extracting context: {e})")
+
+    # Log raw _meta keys
+    lines.append("")
+    lines.append("Raw _meta keys present:")
+    if meta and isinstance(meta, Mapping):
+        keys = list(meta.keys())
+        if keys:
+            for key in sorted(keys):
+                lines.append(f"  - {key}")
+        else:
+            lines.append("  (empty)")
+    else:
+        lines.append("  (no _meta)")
+
+    lines.append("=" * 80)
+    lines.append("")  # Empty line for readability
+
+    # Write to stderr
+    print("\n".join(lines), file=sys.stderr, flush=True)
+
+
 @dataclass
 class FastMCPTracingMiddleware:
     """FastMCP hook-based middleware that emits OpenTelemetry spans for tool calls.
@@ -258,6 +374,16 @@ class FastMCPTracingMiddleware:
         # Get tracer and create span name
         tracer = self.tracer or trace.get_tracer(__name__)
         span_name = f"{self.span_name_prefix}{tool_name}"
+
+        # Debug logging if enabled
+        _debug_log_tool_call(
+            tool_name=tool_name,
+            meta=meta,
+            span_name=span_name,
+            mcp_method=ctx.method,
+            mcp_source=ctx.source,
+            extracted_context=parent_context,
+        )
 
         try:
             with tracer.start_as_current_span(
