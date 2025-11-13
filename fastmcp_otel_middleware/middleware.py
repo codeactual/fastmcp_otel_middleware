@@ -238,18 +238,24 @@ def _debug_log_tool_call(
     except Exception as e:
         lines.append(f"  (error extracting context: {e})")
 
-    # Log raw _meta keys
+    # Log raw _meta information
     lines.append("")
-    lines.append("Raw _meta keys present:")
-    if meta and isinstance(meta, Mapping):
-        keys = list(meta.keys())
-        if keys:
-            for key in sorted(keys):
-                lines.append(f"  - {key}")
-        else:
-            lines.append("  (empty)")
+    lines.append("Raw _meta information:")
+    if meta is None:
+        lines.append("  _meta is None")
     else:
-        lines.append("  (no _meta)")
+        lines.append(f"  _meta type: {type(meta).__name__}")
+        lines.append(f"  _meta repr: {repr(meta)}")
+        if isinstance(meta, Mapping):
+            keys = list(meta.keys())
+            if keys:
+                lines.append("  _meta keys:")
+                for key in sorted(keys):
+                    lines.append(f"    - {key}")
+            else:
+                lines.append("  _meta is empty dict")
+        else:
+            lines.append("  _meta is not a Mapping (str/list/etc)")
 
     lines.append("=" * 80)
     lines.append("")  # Empty line for readability
@@ -368,6 +374,21 @@ class FastMCPTracingMiddleware:
 
         # Extract OpenTelemetry context from _meta field
         meta = getattr(ctx.message, "_meta", None)
+
+        # Early debug logging to see what _meta contains
+        if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") == "1":
+            msg_attrs = [attr for attr in dir(ctx.message) if not attr.startswith("_")]
+            print(
+                f"[FASTMCP OTEL DEBUG] Extracting _meta from ctx.message:\n"
+                f"  ctx.message type: {type(ctx.message).__name__}\n"
+                f"  ctx.message attributes: {msg_attrs}\n"
+                f"  ctx.message has _meta attr: {hasattr(ctx.message, '_meta')}\n"
+                f"  _meta value: {repr(meta)}\n"
+                f"  _meta type: {type(meta).__name__ if meta is not None else 'None'}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         parent_context = get_context_from_meta(meta, self.propagator, self.getter)
 
         # Attach the extracted context to the current task
