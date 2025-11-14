@@ -20,6 +20,13 @@ class MockToolCallMessage:
         self._meta = meta
 
 
+class MockRequestContext:
+    """Mock FastMCP request context."""
+
+    def __init__(self, meta: dict | None = None):
+        self.meta = meta
+
+
 class MockMiddlewareContext:
     """Mock FastMCP middleware context."""
 
@@ -32,6 +39,7 @@ class MockMiddlewareContext:
         self.message = message
         self.method = method
         self.source = source
+        self.request_context = MockRequestContext(meta=message._meta)
 
 
 def test_attribute_export():
