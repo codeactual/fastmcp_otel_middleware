@@ -18,7 +18,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.7.0",
-    "fastmcp>=2.9.0",  # For integration tests
+    "fastmcp>=2.13.1",  # For integration tests (requires request_context.meta API)
 ]
 
 [tool.setuptools.packages.find]

@@ -42,7 +42,7 @@ class ToolCallMessage(Protocol):
 
 
 class RequestContext(Protocol):
-    """Protocol for FastMCP request context (available since commit 356e1f80)."""
+    """Protocol for FastMCP request context (available since version 2.13.1)."""
 
     @property
     def meta(self) -> dict[str, Any] | None:
@@ -59,7 +59,7 @@ class MiddlewareContext(Protocol):
 
     @property
     def request_context(self) -> RequestContext:
-        """Request context containing metadata (available since commit 356e1f80)."""
+        """Request context containing metadata (available since version 2.13.1)."""
         ...
 
 
@@ -70,7 +70,7 @@ class MetaCarrierGetter(Getter[MetaMapping]):
     """Translate MCP meta dictionaries into an OpenTelemetry carrier.
 
     MCP clients send a `_meta` object that may contain OpenTelemetry headers.
-    FastMCP exposes this via ctx.request_context.meta (since commit 356e1f80).
+    FastMCP exposes this via ctx.request_context.meta (since version 2.13.1).
 
     The Model Context Protocol specification intentionally mirrors HTTP
     propagation, so we expect to find fields like ``traceparent`` and
@@ -294,7 +294,7 @@ class FastMCPTracingMiddleware:
     starts a server span for each tool invocation, and propagates the context through
     the call chain.
 
-    Compatible with FastMCP 2.9+ with the new request_context.meta API (commit 356e1f80).
+    Compatible with FastMCP 2.13.1+ with the request_context.meta API.
     Does not depend on the fastmcp package directly, using duck typing to remain
     lightweight and flexible.
 
@@ -508,7 +508,7 @@ def instrument_fastmcp(
     standard ``app.add_middleware()`` method. The middleware will automatically
     trace all tool invocations with OpenTelemetry spans.
 
-    Compatible with FastMCP 2.9+.
+    Compatible with FastMCP 2.13.1+ (requires request_context.meta API).
 
     Parameters
     ----------
@@ -559,6 +559,6 @@ def instrument_fastmcp(
 
     raise TypeError(
         f"The provided app does not have an 'add_middleware' method. "
-        f"This middleware requires FastMCP 2.9 or later. "
+        f"This middleware requires FastMCP 2.13.1 or later. "
         f"Got app type: {type(app)}"
     )

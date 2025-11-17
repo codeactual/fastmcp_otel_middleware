@@ -4,7 +4,7 @@ This test requires the fastmcp package to be installed, which is included in the
 dependencies. The middleware itself does not depend on fastmcp (it uses duck typing),
 but we test against real FastMCP servers to ensure compatibility.
 
-IMPORTANT: These tests require FastMCP with commit 356e1f80 or later, which introduces
+IMPORTANT: These tests require FastMCP version 2.13.1 or later, which introduces
 the ctx.request_context.meta API. The middleware no longer supports the legacy
 ctx.message._meta API.
 
@@ -44,7 +44,7 @@ def _fastmcp_has_request_context():
 
 pytestmark = pytest.mark.skipif(
     not FASTMCP_AVAILABLE,
-    reason="FastMCP not installed (requires fastmcp with commit 356e1f80+)",
+    reason="FastMCP not installed (requires fastmcp>=2.13.1 for request_context.meta API)",
 )
 
 
@@ -62,7 +62,7 @@ def tracer_provider():
 async def test_middleware_with_in_memory_server(tracer_provider):
     """Test that middleware works with fastmcp in-memory server.
 
-    This test requires FastMCP with the request_context.meta API (commit 356e1f80+).
+    This test requires FastMCP version 2.13.1+ with the request_context.meta API.
     If the API is not available, the test will be skipped.
     """
     provider, exporter = tracer_provider
@@ -117,7 +117,7 @@ async def test_middleware_with_in_memory_server(tracer_provider):
         if "request_context" in str(e):
             pytest.skip(
                 "FastMCP version does not support request_context.meta API "
-                "(requires commit 356e1f80 or later)"
+                "(requires version 2.13.1 or later)"
             )
         raise
 
@@ -129,7 +129,7 @@ async def test_middleware_handles_non_tool_methods(tracer_provider):
     The middleware should only create spans for tool calls, not for
     initialize, list_tools, etc.
 
-    This test requires FastMCP with the request_context.meta API (commit 356e1f80+).
+    This test requires FastMCP version 2.13.1+ with the request_context.meta API.
     If the API is not available, the test will be skipped.
     """
     provider, exporter = tracer_provider
@@ -157,6 +157,6 @@ async def test_middleware_handles_non_tool_methods(tracer_provider):
         if "request_context" in str(e):
             pytest.skip(
                 "FastMCP version does not support request_context.meta API "
-                "(requires commit 356e1f80 or later)"
+                "(requires version 2.13.1 or later)"
             )
         raise
