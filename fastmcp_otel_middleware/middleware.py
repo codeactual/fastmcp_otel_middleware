@@ -86,7 +86,7 @@ class MetaCarrierGetter(Getter[MetaMapping]):
         "baggage": ("baggage", "Baggage", "BAGGAGE"),
     }
 
-    def get(self, carrier: MetaMapping | None, key: str) -> Sequence[str]:
+    def get(self, carrier: MetaMapping | None, key: str) -> list[str]:
         if not carrier:
             return []
         normalized_key = key.lower()
@@ -97,13 +97,13 @@ class MetaCarrierGetter(Getter[MetaMapping]):
                 values.extend(self._coerce_to_strings(value))
         return values
 
-    def keys(self, carrier: MetaMapping | None) -> Iterable[str]:
+    def keys(self, carrier: MetaMapping | None) -> list[str]:
         if not carrier:
             return []
         keys: set[str] = set()
         for source in self._candidate_sources(carrier):
             keys.update(source.keys())
-        return keys
+        return list(keys)
 
     # -- private helpers -------------------------------------------------
 
