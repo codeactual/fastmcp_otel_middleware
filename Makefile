@@ -14,10 +14,10 @@ lint:
 
 .PHONY: build
 build:
+	uv build --verbose --color=always --no-cache 2>&1 | grep -Ev "Skipping file for setuptools"
 
 .PHONY: test
 test:
-	uv build --verbose --color=always --no-cache 2>&1 | grep -Ev "Skipping file for setuptools"
 	pytest -v --tb=short
 
 .PHONY: ci
