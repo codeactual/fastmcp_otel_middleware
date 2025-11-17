@@ -1,13 +1,14 @@
 .PHONY: check_deps
 check_deps:
-	uv sync --locked
+	uv sync --locked --all-groups
 
 .PHONY: install_deps
 install_deps:
-	uv sync --frozen
+	uv sync --frozen --all-groups
 
 .PHONY: lint
 lint:
+	source .venv/bin/activate
 	ruff check .
 	ruff format --check .
 	mypy .
@@ -18,6 +19,7 @@ build:
 
 .PHONY: test
 test:
+	source .venv/bin/activate
 	pytest -v --tb=short
 
 .PHONY: ci
