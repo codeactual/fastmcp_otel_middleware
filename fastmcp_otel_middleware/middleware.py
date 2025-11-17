@@ -23,7 +23,7 @@ import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol
 
 from opentelemetry import context, trace
 from opentelemetry.context import Context
