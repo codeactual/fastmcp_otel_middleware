@@ -43,6 +43,9 @@ ignore = [
     "E501",  # line too long (handled by formatter)
 ]
 
+[tool.mypy]
+exclude = '^tests/_.*_stub/'
+
 [dependency-groups]
 dev = [
     "mypy>=1.18.2",
