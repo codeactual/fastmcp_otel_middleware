@@ -1,3 +1,5 @@
+
+
 .PHONY: check_deps
 check_deps:
 	uv sync --locked --all-groups
@@ -8,10 +10,9 @@ install_deps:
 
 .PHONY: lint
 lint:
-	source .venv/bin/activate
-	ruff check .
-	ruff format --check .
-	mypy .
+	uv run ruff check .
+	uv run ruff format --check .
+	uv run mypy .
 
 .PHONY: build
 build:
@@ -19,8 +20,7 @@ build:
 
 .PHONY: test
 test:
-	source .venv/bin/activate
-	pytest -v --tb=short
+	uv run pytest -v --tb=short
 
 .PHONY: ci
 ci: check_deps install_deps lint build test
