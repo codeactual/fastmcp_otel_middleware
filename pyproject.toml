@@ -50,3 +50,10 @@ select = [
 ignore = [
     "E501",  # line too long (handled by formatter)
 ]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18.2",
+    "pytest>=9.0.1",
+    "ruff>=0.14.5",
+]
