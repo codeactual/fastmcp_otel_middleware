@@ -403,18 +403,19 @@ class FastMCPTracingMiddleware:
             if request_ctx is not None:
                 meta = request_ctx.meta
 
+        parent_context = get_context_from_meta(meta, self.propagator, self.getter)
+
         # Early debug logging to see what _meta contains
         if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") == "1":
             print(
                 f"[FASTMCP OTEL DEBUG] Extracting _meta:\n"
                 f"  meta source: {meta_source}\n"
                 f"  _meta value: {repr(meta)}\n"
-                f"  _meta type: {type(meta).__name__ if meta is not None else 'None'}",
+                f"  _meta type: {type(meta).__name__ if meta is not None else 'None'}\n"
+                f"  parent_contexte: {parent_context}",
                 file=sys.stderr,
                 flush=True,
             )
-
-        parent_context = get_context_from_meta(meta, self.propagator, self.getter)
 
         # Attach the extracted context to the current task
         token = context.attach(parent_context)
