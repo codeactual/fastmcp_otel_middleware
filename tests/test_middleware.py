@@ -446,7 +446,7 @@ def test_middleware_extracts_meta_from_request_context(tracer_provider, parent_c
 
 
 def test_traceparent_extracts_trace_id_span_id_and_flags(tracer_provider):
-    """Test that trace_id, span_id, and trace_flags are extracted from traceparent."""
+    """Test that trace_id, span_id, trace_flags, and is_remote are extracted from traceparent."""
     provider, exporter = tracer_provider
     tracer = provider.get_tracer(__name__)
     middleware = FastMCPTracingMiddleware(tracer=tracer)
@@ -478,3 +478,5 @@ def test_traceparent_extracts_trace_id_span_id_and_flags(tracer_provider):
     assert span.parent.span_id == expected_span_id
     # trace_flags should be set (SAMPLED in the stub implementation)
     assert span.parent.trace_flags == TraceFlags.SAMPLED
+    # is_remote should be True since context was propagated from external client
+    assert span.parent.is_remote is True
