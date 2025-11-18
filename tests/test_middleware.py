@@ -67,6 +67,13 @@ class MockRequestContext:
         self.meta = meta
 
 
+class MockContext:
+    """Mock FastMCP Context."""
+
+    def __init__(self, request_context: MockRequestContext | None = None):
+        self.request_context = request_context
+
+
 class MockMiddlewareContext:
     """Mock FastMCP middleware context."""
 
@@ -75,11 +82,17 @@ class MockMiddlewareContext:
         message: MockToolCallMessage,
         method: str = "tools/call",
         source: str = "client",
+        fastmcp_context: MockContext | None = None,
     ):
         self.message = message
         self.method = method
         self.source = source
-        self.request_context = MockRequestContext(meta=message._meta)
+        # If no fastmcp_context provided, create one from message._meta for backward compatibility
+        if fastmcp_context is None:
+            request_ctx = MockRequestContext(meta=message._meta)
+            self.fastmcp_context = MockContext(request_context=request_ctx)
+        else:
+            self.fastmcp_context = fastmcp_context
 
 
 def test_meta_carrier_getter_reads_nested_fields(parent_context):

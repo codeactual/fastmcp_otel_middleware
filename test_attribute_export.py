@@ -27,6 +27,13 @@ class MockRequestContext:
         self.meta = meta
 
 
+class MockContext:
+    """Mock FastMCP Context."""
+
+    def __init__(self, request_context):
+        self.request_context = request_context
+
+
 class MockMiddlewareContext:
     """Mock FastMCP middleware context."""
 
@@ -39,7 +46,9 @@ class MockMiddlewareContext:
         self.message = message
         self.method = method
         self.source = source
+        # Create fastmcp_context from message._meta for backward compatibility
         self.request_context = MockRequestContext(meta=message._meta)
+        self.fastmcp_context = MockContext(request_context=self.request_context)
 
 
 def test_attribute_export():

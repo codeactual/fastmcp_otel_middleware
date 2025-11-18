@@ -42,11 +42,20 @@ class ToolCallMessage(Protocol):
 
 
 class RequestContext(Protocol):
-    """Protocol for FastMCP request context (available since version 2.13.1)."""
+    """Protocol for FastMCP request context."""
 
     @property
     def meta(self) -> dict[str, Any] | None:
         """Optional metadata sent by the client."""
+        ...
+
+
+class FastMCPContext(Protocol):
+    """Protocol for FastMCP Context object."""
+
+    @property
+    def request_context(self) -> RequestContext | None:
+        """Access to the underlying request context."""
         ...
 
 
@@ -56,11 +65,7 @@ class MiddlewareContext(Protocol):
     message: ToolCallMessage  # The MCP message being processed
     method: str | None  # The MCP method (e.g., "tools/call")
     source: str  # Source of the request ("client" or "server")
-
-    @property
-    def request_context(self) -> RequestContext:
-        """Request context containing metadata (available since version 2.13.1)."""
-        ...
+    fastmcp_context: FastMCPContext | None  # FastMCP context (contains request_context)
 
 
 CallNext = Callable[[MiddlewareContext], Awaitable[Any]]
@@ -70,7 +75,7 @@ class MetaCarrierGetter(Getter[MetaMapping]):
     """Translate MCP meta dictionaries into an OpenTelemetry carrier.
 
     MCP clients send a `_meta` object that may contain OpenTelemetry headers.
-    FastMCP exposes this via ctx.request_context.meta (since version 2.13.1).
+    FastMCP exposes this via ctx.fastmcp_context.request_context.meta.
 
     The Model Context Protocol specification intentionally mirrors HTTP
     propagation, so we expect to find fields like ``traceparent`` and
@@ -290,13 +295,12 @@ class FastMCPTracingMiddleware:
 
     This middleware uses FastMCP's hook-based middleware system (introduced in v2.9)
     to provide reliable access to tool names and other MCP protocol information.
-    It extracts OpenTelemetry context from the `_meta` field via ctx.request_context.meta,
-    starts a server span for each tool invocation, and propagates the context through
-    the call chain.
+    It extracts OpenTelemetry context from the `_meta` field via
+    ctx.fastmcp_context.request_context.meta, starts a server span for each tool
+    invocation, and propagates the context through the call chain.
 
-    Compatible with FastMCP 2.13.1+ with the request_context.meta API.
-    Does not depend on the fastmcp package directly, using duck typing to remain
-    lightweight and flexible.
+    Compatible with FastMCP 2.9+. Does not depend on the fastmcp package directly,
+    using duck typing to remain lightweight and flexible.
 
     Parameters
     ----------
@@ -374,7 +378,7 @@ class FastMCPTracingMiddleware:
 
         This method is called by FastMCP for each tool invocation. It:
         1. Extracts the tool name from context.message.name
-        2. Extracts OpenTelemetry context from context.request_context.meta
+        2. Extracts OpenTelemetry context from context.fastmcp_context.request_context.meta
         3. Creates a server span for the tool invocation
         4. Calls the next handler in the middleware chain
         5. Records success/failure and returns the result
@@ -394,9 +398,13 @@ class FastMCPTracingMiddleware:
         # Extract tool name from the MCP message
         tool_name = ctx.message.name
 
-        # Extract OpenTelemetry context from _meta field via request_context
-        meta = ctx.request_context.meta
-        meta_source = "ctx.request_context.meta"
+        # Extract OpenTelemetry context from _meta field via fastmcp_context
+        meta = None
+        meta_source = "ctx.fastmcp_context.request_context.meta"
+        if ctx.fastmcp_context is not None:
+            request_ctx = ctx.fastmcp_context.request_context
+            if request_ctx is not None:
+                meta = request_ctx.meta
 
         # Early debug logging to see what _meta contains
         if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") == "1":
