@@ -110,13 +110,26 @@ class MetaCarrierGetter(Getter[MetaMapping]):
     # -- private helpers -------------------------------------------------
 
     def _candidate_sources(self, carrier: MetaMapping) -> Iterable[dict[str, Any]]:
-        if not isinstance(carrier, Mapping):
-            return []
-        yield self._normalize_mapping(carrier)
-        for namespace_key in self.OTEL_NAMESPACE_KEYS:
-            nested = carrier.get(namespace_key)
-            if isinstance(nested, Mapping):
-                yield self._normalize_mapping(nested)
+        # Handle dict-like Mapping objects
+        if isinstance(carrier, Mapping):
+            yield self._normalize_mapping(carrier)
+            for namespace_key in self.OTEL_NAMESPACE_KEYS:
+                nested = carrier.get(namespace_key)
+                if isinstance(nested, Mapping):
+                    yield self._normalize_mapping(nested)
+        # Handle objects with attributes (dataclasses, namedtuples, etc.)
+        elif hasattr(carrier, "__dict__"):
+            # Convert object attributes to a dict
+            carrier_dict = vars(carrier)
+            yield self._normalize_mapping(carrier_dict)
+            # Also check for nested otel/opentelemetry namespaces
+            for namespace_key in self.OTEL_NAMESPACE_KEYS:
+                nested = carrier_dict.get(namespace_key)
+                if nested:
+                    if isinstance(nested, Mapping):
+                        yield self._normalize_mapping(nested)
+                    elif hasattr(nested, "__dict__"):
+                        yield self._normalize_mapping(vars(nested))
 
     def _normalize_mapping(self, mapping: Mapping[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
