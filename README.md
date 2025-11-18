@@ -69,7 +69,7 @@ ctx = get_context_from_meta(meta)
 
 ## Requirements
 
-- **FastMCP 2.9+**: This middleware uses the hook-based middleware system introduced in FastMCP 2.9
+- **FastMCP 2.13.1+**
 - **Python 3.12+**: Required for proper type annotation support
 - **OpenTelemetry API**: For tracing functionality
 
