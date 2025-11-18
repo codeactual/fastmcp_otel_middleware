@@ -480,3 +480,74 @@ def test_traceparent_extracts_trace_id_span_id_and_flags(tracer_provider):
     assert span.parent.trace_flags == TraceFlags.SAMPLED
     # is_remote should be True since context was propagated from external client
     assert span.parent.is_remote is True
+
+
+def test_meta_carrier_getter_handles_dataclass_objects():
+    """Test that MetaCarrierGetter can extract context from dataclass objects.
+
+    This tests the fix for the issue where _meta is a dataclass (not a dict)
+    and the getter needs to use __dict__ to access attributes.
+    """
+    from dataclasses import dataclass
+
+    @dataclass
+    class Meta:
+        progressToken: int | None = None
+        traceparent: str | None = None
+        tracestate: str | None = None
+
+    meta = Meta(
+        progressToken=1,
+        traceparent="00-3894bc47d5ebfd5771e669ed370972d4-d4908ee9316cf66b-01",
+    )
+
+    getter = MetaCarrierGetter()
+
+    # Should be able to get values from dataclass attributes
+    values = getter.get(meta, "traceparent")
+    assert values == ["00-3894bc47d5ebfd5771e669ed370972d4-d4908ee9316cf66b-01"]
+
+    # Should work with keys() too
+    keys = list(getter.keys(meta))
+    assert "traceparent" in keys
+
+
+def test_middleware_extracts_context_from_dataclass_meta(tracer_provider):
+    """Test that middleware can extract parent context from dataclass _meta.
+
+    This tests the end-to-end flow when FastMCP provides _meta as a dataclass
+    instead of a plain dict.
+    """
+    from dataclasses import dataclass
+
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    @dataclass
+    class Meta:
+        progressToken: int | None = None
+        traceparent: str | None = None
+
+    meta = Meta(
+        progressToken=1,
+        traceparent="00-3894bc47d5ebfd5771e669ed370972d4-d4908ee9316cf66b-01",
+    )
+
+    message = MockToolCallMessage(name="test-tool", meta=meta)
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
+        return "result"
+
+    asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 1
+    span = finished_spans[0]
+
+    # Verify parent context was extracted correctly
+    assert span.parent is not None
+    assert span.parent.trace_id == 0x3894BC47D5EBFD5771E669ED370972D4
+    assert span.parent.span_id == 0xD4908EE9316CF66B
+    assert span.parent.is_remote is True
