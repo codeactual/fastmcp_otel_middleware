@@ -443,3 +443,38 @@ def test_middleware_extracts_meta_from_request_context(tracer_provider, parent_c
     # Verify parent trace is propagated
     assert span.parent is not None
     assert span.parent.span_id == parent_span_context.span_id
+
+
+def test_traceparent_extracts_trace_id_span_id_and_flags(tracer_provider):
+    """Test that trace_id, span_id, and trace_flags are extracted from traceparent."""
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    # Create a meta dict with only traceparent (no baggage or tracestate)
+    expected_trace_id = 0x4BF92F3577B34DA6A3CE929D0E0E4736
+    expected_span_id = 0x00F067AA0BA902B7
+    traceparent = f"00-{expected_trace_id:032x}-{expected_span_id:016x}-01"
+    meta = {"traceparent": traceparent}
+
+    message = MockToolCallMessage(name="test-tool", meta=meta)
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
+        # Verify the parent context is active during tool execution
+        current_span = trace.get_current_span()
+        assert current_span.get_span_context().is_valid
+        return "result"
+
+    asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 1
+    span = finished_spans[0]
+
+    # Verify parent span context contains the expected trace_id, span_id, and trace_flags
+    assert span.parent is not None
+    assert span.parent.trace_id == expected_trace_id
+    assert span.parent.span_id == expected_span_id
+    # trace_flags should be set (SAMPLED in the stub implementation)
+    assert span.parent.trace_flags == TraceFlags.SAMPLED

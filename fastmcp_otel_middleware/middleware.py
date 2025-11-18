@@ -78,17 +78,14 @@ class MetaCarrierGetter(Getter[MetaMapping]):
     FastMCP exposes this via ctx.fastmcp_context.request_context.meta.
 
     The Model Context Protocol specification intentionally mirrors HTTP
-    propagation, so we expect to find fields like ``traceparent`` and
-    ``baggage`` either directly on the meta dictionary or nested under an
-    ``otel`` namespace. This getter normalises the structure for the OTel
-    propagator.
+    propagation, so we expect to find the ``traceparent`` field either
+    directly on the meta dictionary or nested under an ``otel`` namespace.
+    This getter normalises the structure for the OTel propagator.
     """
 
     OTEL_NAMESPACE_KEYS = ("otel", "opentelemetry")
     OTEL_FIELD_ALIASES = {
         "traceparent": ("traceparent", "traceParent", "TRACEPARENT"),
-        "tracestate": ("tracestate", "traceState", "TRACESTATE"),
-        "baggage": ("baggage", "Baggage", "BAGGAGE"),
     }
 
     def get(self, carrier: MetaMapping | None, key: str) -> list[str]:
