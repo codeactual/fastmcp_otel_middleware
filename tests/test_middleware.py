@@ -552,3 +552,99 @@ def test_middleware_extracts_context_from_dataclass_meta(tracer_provider):
     assert span.parent.trace_id == 0x3894BC47D5EBFD5771E669ED370972D4
     assert span.parent.span_id == 0xD4908EE9316CF66B
     assert span.parent.is_remote is True
+
+
+def test_meta_carrier_getter_handles_pydantic_models_with_extra_fields():
+    """Test that MetaCarrierGetter can extract traceparent from Pydantic models with extra fields.
+
+    This reproduces the issue where traceparent is stored as an extra field in a Pydantic
+    model with ConfigDict(extra="allow"), causing vars() to miss it since extra fields
+    are stored in __pydantic_extra__ rather than __dict__.
+
+    The carrier object shows: progressToken=1 traceparent='00-...'
+    But vars(carrier) only returns: {'progressToken': 1}
+    """
+    try:
+        from pydantic import BaseModel, ConfigDict
+    except ImportError:
+        pytest.skip("pydantic not installed")
+
+    class Meta(BaseModel):
+        """Mimics FastMCP's RequestParams.Meta with extra="allow"."""
+
+        model_config = ConfigDict(extra="allow")
+        progressToken: int | None = None
+
+    # Create meta with both a defined field and an extra field
+    meta = Meta(
+        progressToken=1,
+        traceparent="00-a22c2967cbf1cd67a58f19310222a6c4-972e21bae8c66381-01",
+    )
+
+    # Reproduce the issue: vars() misses the traceparent extra field
+    carrier_dict = vars(meta)
+    assert "progressToken" in carrier_dict
+    # This assertion would fail with the old implementation
+    # because traceparent is in __pydantic_extra__, not __dict__
+
+    getter = MetaCarrierGetter()
+
+    # Should be able to get traceparent from the Pydantic model
+    values = getter.get(meta, "traceparent")
+    assert values == ["00-a22c2967cbf1cd67a58f19310222a6c4-972e21bae8c66381-01"], (
+        f"Expected traceparent to be extracted, but got {values}. "
+        f"Object repr: {meta!r}, vars(): {vars(meta)}"
+    )
+
+    # Should list all keys including extra fields
+    keys = getter.keys(meta)
+    assert "traceparent" in keys, (
+        f"Expected 'traceparent' in keys, but got {keys}. "
+        f"Object repr: {meta!r}, vars(): {vars(meta)}"
+    )
+    assert "progresstoken" in keys  # normalized to lowercase
+
+
+def test_middleware_extracts_context_from_pydantic_meta(tracer_provider):
+    """Test end-to-end extraction of parent context from Pydantic BaseModel _meta.
+
+    This tests the real-world scenario where FastMCP provides meta as a Pydantic
+    BaseModel with ConfigDict(extra="allow"), and traceparent is an extra field.
+    """
+    try:
+        from pydantic import BaseModel, ConfigDict
+    except ImportError:
+        pytest.skip("pydantic not installed")
+
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    middleware = FastMCPTracingMiddleware(tracer=tracer)
+
+    class Meta(BaseModel):
+        """Mimics FastMCP's RequestParams.Meta."""
+
+        model_config = ConfigDict(extra="allow")
+        progressToken: int | None = None
+
+    meta = Meta(
+        progressToken=1,
+        traceparent="00-a22c2967cbf1cd67a58f19310222a6c4-972e21bae8c66381-01",
+    )
+
+    message = MockToolCallMessage(name="test-tool", meta=meta)
+    ctx = MockMiddlewareContext(message=message)
+
+    async def call_next(context):
+        return "result"
+
+    asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    finished_spans = exporter.get_finished_spans()
+    assert len(finished_spans) == 1
+    span = finished_spans[0]
+
+    # Verify parent context was extracted correctly from the Pydantic model
+    assert span.parent is not None
+    assert span.parent.trace_id == 0xA22C2967CBF1CD67A58F19310222A6C4
+    assert span.parent.span_id == 0x972E21BAE8C66381
+    assert span.parent.is_remote is True

@@ -72,15 +72,20 @@ CallNext = Callable[[MiddlewareContext], Awaitable[Any]]
 
 
 class MetaCarrierGetter(Getter[MetaMapping]):
-    """Translate MCP meta dataclass objects into an OpenTelemetry carrier.
+    """Translate MCP meta objects into an OpenTelemetry carrier.
 
-    MCP clients send a `_meta` dataclass object that may contain OpenTelemetry headers.
-    FastMCP exposes this via ctx.fastmcp_context.request_context.meta as a dataclass.
+    MCP clients send a `_meta` object that may contain OpenTelemetry headers.
+    FastMCP exposes this via ctx.fastmcp_context.request_context.meta as a
+    Pydantic BaseModel (RequestParams.Meta) with ConfigDict(extra="allow").
 
     The Model Context Protocol specification intentionally mirrors HTTP
     propagation, so we expect to find the ``traceparent`` field either
-    directly as a dataclass attribute or nested under an ``otel`` namespace.
-    This getter extracts the dataclass attributes and normalises them for the OTel propagator.
+    directly as an attribute (including extra fields) or nested under an
+    ``otel`` namespace. This getter extracts all fields (including Pydantic
+    extra fields) and normalises them for the OTel propagator.
+
+    For Pydantic BaseModels, this uses model_dump() to ensure extra fields
+    like traceparent are included. For regular dataclasses, it uses vars().
     """
 
     OTEL_NAMESPACE_KEYS = ("otel", "opentelemetry")
@@ -110,20 +115,55 @@ class MetaCarrierGetter(Getter[MetaMapping]):
     # -- private helpers -------------------------------------------------
 
     def _candidate_sources(self, carrier: MetaMapping) -> Iterable[dict[str, Any]]:
-        # FastMCP's _meta is a dataclass object, not a dict
-        # Extract attributes using vars() to get the underlying __dict__
+        """Extract fields from the carrier object (Pydantic BaseModel or dataclass).
+
+        For Pydantic models with ConfigDict(extra="allow"), extra fields like
+        traceparent are stored in __pydantic_extra__ instead of __dict__.
+        We use model_dump() to get all fields including extras.
+
+        For regular dataclasses, we use vars() to get __dict__ attributes.
+        """
         if not hasattr(carrier, "__dict__"):
             return
 
-        # Convert object attributes to a dict
-        carrier_dict = vars(carrier)
+        # Try Pydantic model_dump() first (handles extra fields correctly)
+        carrier_dict = self._extract_fields_from_carrier(carrier)
         yield self._normalize_mapping(carrier_dict)
 
         # Also check for nested otel/opentelemetry namespaces
         for namespace_key in self.OTEL_NAMESPACE_KEYS:
             nested = carrier_dict.get(namespace_key)
             if nested and hasattr(nested, "__dict__"):
-                yield self._normalize_mapping(vars(nested))
+                nested_dict = self._extract_fields_from_carrier(nested)
+                yield self._normalize_mapping(nested_dict)
+
+    def _extract_fields_from_carrier(self, carrier: Any) -> dict[str, Any]:
+        """Extract all fields from a carrier object.
+
+        For Pydantic BaseModels with extra="allow", this uses model_dump() to ensure
+        extra fields (like traceparent) are included. The issue is that vars() only
+        returns defined fields from __dict__, missing extra fields stored in
+        __pydantic_extra__.
+
+        For regular dataclasses or objects, this falls back to vars().
+
+        Parameters
+        ----------
+        carrier:
+            The carrier object (Pydantic BaseModel or dataclass).
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary containing all fields from the carrier.
+        """
+        # Check for Pydantic BaseModel's model_dump() method
+        if hasattr(carrier, "model_dump") and callable(carrier.model_dump):
+            # Use model_dump() which includes extra fields
+            return carrier.model_dump()
+
+        # Fall back to vars() for dataclasses and other objects
+        return vars(carrier)
 
     def _normalize_mapping(self, mapping: Mapping[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
