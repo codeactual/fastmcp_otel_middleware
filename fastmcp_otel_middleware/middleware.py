@@ -72,15 +72,15 @@ CallNext = Callable[[MiddlewareContext], Awaitable[Any]]
 
 
 class MetaCarrierGetter(Getter[MetaMapping]):
-    """Translate MCP meta dictionaries into an OpenTelemetry carrier.
+    """Translate MCP meta dataclass objects into an OpenTelemetry carrier.
 
-    MCP clients send a `_meta` object that may contain OpenTelemetry headers.
-    FastMCP exposes this via ctx.fastmcp_context.request_context.meta.
+    MCP clients send a `_meta` dataclass object that may contain OpenTelemetry headers.
+    FastMCP exposes this via ctx.fastmcp_context.request_context.meta as a dataclass.
 
     The Model Context Protocol specification intentionally mirrors HTTP
     propagation, so we expect to find the ``traceparent`` field either
-    directly on the meta dictionary or nested under an ``otel`` namespace.
-    This getter normalises the structure for the OTel propagator.
+    directly as a dataclass attribute or nested under an ``otel`` namespace.
+    This getter extracts the dataclass attributes and normalises them for the OTel propagator.
     """
 
     OTEL_NAMESPACE_KEYS = ("otel", "opentelemetry")
@@ -110,26 +110,20 @@ class MetaCarrierGetter(Getter[MetaMapping]):
     # -- private helpers -------------------------------------------------
 
     def _candidate_sources(self, carrier: MetaMapping) -> Iterable[dict[str, Any]]:
-        # Handle dict-like Mapping objects
-        if isinstance(carrier, Mapping):
-            yield self._normalize_mapping(carrier)
-            for namespace_key in self.OTEL_NAMESPACE_KEYS:
-                nested = carrier.get(namespace_key)
-                if isinstance(nested, Mapping):
-                    yield self._normalize_mapping(nested)
-        # Handle objects with attributes (dataclasses, namedtuples, etc.)
-        elif hasattr(carrier, "__dict__"):
-            # Convert object attributes to a dict
-            carrier_dict = vars(carrier)
-            yield self._normalize_mapping(carrier_dict)
-            # Also check for nested otel/opentelemetry namespaces
-            for namespace_key in self.OTEL_NAMESPACE_KEYS:
-                nested = carrier_dict.get(namespace_key)
-                if nested:
-                    if isinstance(nested, Mapping):
-                        yield self._normalize_mapping(nested)
-                    elif hasattr(nested, "__dict__"):
-                        yield self._normalize_mapping(vars(nested))
+        # FastMCP's _meta is a dataclass object, not a dict
+        # Extract attributes using vars() to get the underlying __dict__
+        if not hasattr(carrier, "__dict__"):
+            return
+
+        # Convert object attributes to a dict
+        carrier_dict = vars(carrier)
+        yield self._normalize_mapping(carrier_dict)
+
+        # Also check for nested otel/opentelemetry namespaces
+        for namespace_key in self.OTEL_NAMESPACE_KEYS:
+            nested = carrier_dict.get(namespace_key)
+            if nested and hasattr(nested, "__dict__"):
+                yield self._normalize_mapping(vars(nested))
 
     def _normalize_mapping(self, mapping: Mapping[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
@@ -235,19 +229,20 @@ def _debug_log_tool_call(
             otel_fields_found = True
             # Show which alias was actually used and its value
             for alias in aliases:
-                if meta and isinstance(meta, Mapping):
-                    # Check root level
-                    if alias in meta:
-                        lines.append(f"  {canonical_key} (as '{alias}'): {meta[alias]}")
+                if meta and hasattr(meta, "__dict__"):
+                    # Check root level dataclass attributes
+                    if hasattr(meta, alias):
+                        lines.append(f"  {canonical_key} (as '{alias}'): {getattr(meta, alias)}")
                         break
                     # Check nested otel/opentelemetry namespaces
                     for ns_key in getter.OTEL_NAMESPACE_KEYS:
-                        nested = meta.get(ns_key)
-                        if isinstance(nested, Mapping) and alias in nested:
-                            lines.append(
-                                f"  {canonical_key} (as '{ns_key}.{alias}'): {nested[alias]}"
-                            )
-                            break
+                        if hasattr(meta, ns_key):
+                            nested = getattr(meta, ns_key)
+                            if hasattr(nested, "__dict__") and hasattr(nested, alias):
+                                lines.append(
+                                    f"  {canonical_key} (as '{ns_key}.{alias}'): {getattr(nested, alias)}"
+                                )
+                                break
 
     if not otel_fields_found:
         lines.append("  (none found)")
@@ -281,16 +276,16 @@ def _debug_log_tool_call(
     else:
         lines.append(f"  _meta type: {type(meta).__name__}")
         lines.append(f"  _meta repr: {repr(meta)}")
-        if isinstance(meta, Mapping):
-            keys = list(meta.keys())
-            if keys:
-                lines.append("  _meta keys:")
-                for key in sorted(keys):
-                    lines.append(f"    - {key}")
+        if hasattr(meta, "__dict__"):
+            attrs = vars(meta)
+            if attrs:
+                lines.append("  _meta attributes:")
+                for key in sorted(attrs.keys()):
+                    lines.append(f"    - {key}: {attrs[key]}")
             else:
-                lines.append("  _meta is empty dict")
+                lines.append("  _meta has no attributes")
         else:
-            lines.append("  _meta is not a Mapping (str/list/etc)")
+            lines.append("  _meta is not a dataclass/object (primitive type)")
 
     lines.append("=" * 80)
     lines.append("")  # Empty line for readability

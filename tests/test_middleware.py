@@ -1,5 +1,6 @@
 import asyncio
 import os
+from dataclasses import dataclass
 from io import StringIO
 from unittest.mock import patch
 
@@ -26,6 +27,15 @@ from fastmcp_otel_middleware.middleware import (
 )
 
 
+@dataclass
+class Meta:
+    """Mock FastMCP Meta dataclass."""
+
+    progressToken: int | None = None
+    traceparent: str | None = None
+    tracestate: str | None = None
+
+
 @pytest.fixture()
 def tracer_provider():
     provider = TracerProvider()
@@ -47,7 +57,9 @@ def parent_context():
     ctx = trace.set_span_in_context(NonRecordingSpan(span_context))
     carrier: dict[str, str] = {}
     TraceContextTextMapPropagator().inject(carrier, context=ctx)
-    return span_context, {"otel": carrier}
+    # Return a Meta dataclass with the traceparent from the carrier
+    meta = Meta(traceparent=carrier.get("traceparent"))
+    return span_context, meta
 
 
 # Mock objects for testing the hook-based middleware pattern
@@ -93,17 +105,6 @@ class MockMiddlewareContext:
             self.fastmcp_context = MockContext(request_context=request_ctx)
         else:
             self.fastmcp_context = fastmcp_context
-
-
-def test_meta_carrier_getter_reads_nested_fields(parent_context):
-    _, meta = parent_context
-    meta["otel"]["traceParent"] = meta["otel"].pop("traceparent")
-    getter = MetaCarrierGetter()
-
-    values = getter.get(meta, "traceparent")
-
-    assert values
-    assert getter.keys(meta)
 
 
 def test_get_context_from_meta_returns_current_when_meta_missing():
@@ -392,7 +393,7 @@ def test_debug_logging_when_enabled(tracer_provider, parent_context):
     # Context extraction may succeed even if span details are unavailable
     assert "Trace ID:" in debug_output or "Context extracted successfully" in debug_output
     assert "Raw _meta information:" in debug_output
-    assert "otel" in debug_output  # The _meta contains an 'otel' key
+    assert "_meta attributes:" in debug_output  # The _meta is a dataclass with attributes
 
 
 def test_debug_logging_when_disabled(tracer_provider, parent_context):
@@ -451,11 +452,11 @@ def test_traceparent_extracts_trace_id_span_id_and_flags(tracer_provider):
     tracer = provider.get_tracer(__name__)
     middleware = FastMCPTracingMiddleware(tracer=tracer)
 
-    # Create a meta dict with only traceparent (no baggage or tracestate)
+    # Create a meta dataclass with only traceparent (no baggage or tracestate)
     expected_trace_id = 0x4BF92F3577B34DA6A3CE929D0E0E4736
     expected_span_id = 0x00F067AA0BA902B7
     traceparent = f"00-{expected_trace_id:032x}-{expected_span_id:016x}-01"
-    meta = {"traceparent": traceparent}
+    meta = Meta(traceparent=traceparent)
 
     message = MockToolCallMessage(name="test-tool", meta=meta)
     ctx = MockMiddlewareContext(message=message)
