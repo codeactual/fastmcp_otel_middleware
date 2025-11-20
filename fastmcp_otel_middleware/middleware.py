@@ -19,8 +19,11 @@ Langfuse MCP tracing example referenced in the module README.
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol, Sequence
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol
 
 from opentelemetry import context, trace
 from opentelemetry.context import Context
@@ -37,9 +40,22 @@ class ToolCallMessage(Protocol):
     name: str  # Tool name
     arguments: dict[str, Any] | None  # Tool arguments
 
+
+class RequestContext(Protocol):
+    """Protocol for FastMCP request context."""
+
     @property
-    def _meta(self) -> dict[str, Any] | None:
+    def meta(self) -> dict[str, Any] | None:
         """Optional metadata sent by the client."""
+        ...
+
+
+class FastMCPContext(Protocol):
+    """Protocol for FastMCP Context object."""
+
+    @property
+    def request_context(self) -> RequestContext | None:
+        """Access to the underlying request context."""
         ...
 
 
@@ -49,30 +65,35 @@ class MiddlewareContext(Protocol):
     message: ToolCallMessage  # The MCP message being processed
     method: str | None  # The MCP method (e.g., "tools/call")
     source: str  # Source of the request ("client" or "server")
+    fastmcp_context: FastMCPContext | None  # FastMCP context (contains request_context)
 
 
 CallNext = Callable[[MiddlewareContext], Awaitable[Any]]
 
 
 class MetaCarrierGetter(Getter[MetaMapping]):
-    """Translate MCP meta dictionaries into an OpenTelemetry carrier.
+    """Translate MCP meta objects into an OpenTelemetry carrier.
 
     MCP clients send a `_meta` object that may contain OpenTelemetry headers.
+    FastMCP exposes this via ctx.fastmcp_context.request_context.meta as a
+    Pydantic BaseModel (RequestParams.Meta) with ConfigDict(extra="allow").
+
     The Model Context Protocol specification intentionally mirrors HTTP
-    propagation, so we expect to find fields like ``traceparent`` and
-    ``baggage`` either directly on the meta dictionary or nested under an
-    ``otel`` namespace.  This getter normalises the structure for the OTel
-    propagator.
+    propagation, so we expect to find the ``traceparent`` field either
+    directly as an attribute (including extra fields) or nested under an
+    ``otel`` namespace. This getter extracts all fields (including Pydantic
+    extra fields) and normalises them for the OTel propagator.
+
+    For Pydantic BaseModels, this uses model_dump() to ensure extra fields
+    like traceparent are included. For regular dataclasses, it uses vars().
     """
 
     OTEL_NAMESPACE_KEYS = ("otel", "opentelemetry")
     OTEL_FIELD_ALIASES = {
         "traceparent": ("traceparent", "traceParent", "TRACEPARENT"),
-        "tracestate": ("tracestate", "traceState", "TRACESTATE"),
-        "baggage": ("baggage", "Baggage", "BAGGAGE"),
     }
 
-    def get(self, carrier: MetaMapping | None, key: str) -> Sequence[str]:
+    def get(self, carrier: MetaMapping | None, key: str) -> list[str]:
         if not carrier:
             return []
         normalized_key = key.lower()
@@ -83,24 +104,66 @@ class MetaCarrierGetter(Getter[MetaMapping]):
                 values.extend(self._coerce_to_strings(value))
         return values
 
-    def keys(self, carrier: MetaMapping | None) -> Iterable[str]:
+    def keys(self, carrier: MetaMapping | None) -> list[str]:
         if not carrier:
             return []
         keys: set[str] = set()
         for source in self._candidate_sources(carrier):
             keys.update(source.keys())
-        return keys
+        return list(keys)
 
     # -- private helpers -------------------------------------------------
 
     def _candidate_sources(self, carrier: MetaMapping) -> Iterable[dict[str, Any]]:
-        if not isinstance(carrier, Mapping):
-            return []
-        yield self._normalize_mapping(carrier)
+        """Extract fields from the carrier object (Pydantic BaseModel or dataclass).
+
+        For Pydantic models with ConfigDict(extra="allow"), extra fields like
+        traceparent are stored in __pydantic_extra__ instead of __dict__.
+        We use model_dump() to get all fields including extras.
+
+        For regular dataclasses, we use vars() to get __dict__ attributes.
+        """
+        if not hasattr(carrier, "__dict__"):
+            return
+
+        # Try Pydantic model_dump() first (handles extra fields correctly)
+        carrier_dict = self._extract_fields_from_carrier(carrier)
+        yield self._normalize_mapping(carrier_dict)
+
+        # Also check for nested otel/opentelemetry namespaces
         for namespace_key in self.OTEL_NAMESPACE_KEYS:
-            nested = carrier.get(namespace_key)
-            if isinstance(nested, Mapping):
-                yield self._normalize_mapping(nested)
+            nested = carrier_dict.get(namespace_key)
+            if nested and hasattr(nested, "__dict__"):
+                nested_dict = self._extract_fields_from_carrier(nested)
+                yield self._normalize_mapping(nested_dict)
+
+    def _extract_fields_from_carrier(self, carrier: Any) -> dict[str, Any]:
+        """Extract all fields from a carrier object.
+
+        For Pydantic BaseModels with extra="allow", this uses model_dump() to ensure
+        extra fields (like traceparent) are included. The issue is that vars() only
+        returns defined fields from __dict__, missing extra fields stored in
+        __pydantic_extra__.
+
+        For regular dataclasses or objects, this falls back to vars().
+
+        Parameters
+        ----------
+        carrier:
+            The carrier object (Pydantic BaseModel or dataclass).
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary containing all fields from the carrier.
+        """
+        # Check for Pydantic BaseModel's model_dump() method
+        if hasattr(carrier, "model_dump") and callable(carrier.model_dump):
+            # Use model_dump() which includes extra fields
+            return carrier.model_dump()
+
+        # Fall back to vars() for dataclasses and other objects
+        return vars(carrier)
 
     def _normalize_mapping(self, mapping: Mapping[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
@@ -140,14 +203,146 @@ def get_context_from_meta(
     return propagator.extract(carrier=meta, getter=getter)
 
 
+def _debug_log_tool_call(
+    tool_name: str,
+    meta: MetaMapping | None,
+    span_name: str,
+    mcp_method: str | None,
+    mcp_source: str,
+    extracted_context: Context,
+    meta_source: str | None = None,
+) -> None:
+    """Log debug information about tool calls when FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG=1.
+
+    This function logs to stderr with the following information:
+    - Timestamp (ISO 8601 format with timezone)
+    - Tool name
+    - Span name (how the tool name is transformed for tracing)
+    - MCP method and source
+    - Meta source (where the _meta was extracted from)
+    - All OTEL_FIELD_ALIASES key/value pairs propagated from _meta
+    - Extracted trace/span IDs from the context
+    - Raw _meta keys present in the request
+
+    Parameters
+    ----------
+    tool_name:
+        Name of the tool being invoked.
+    meta:
+        The _meta dictionary from the MCP message.
+    span_name:
+        The generated span name.
+    mcp_method:
+        The MCP protocol method (e.g., "tools/call").
+    mcp_source:
+        Source of the request ("client" or "server").
+    extracted_context:
+        The OpenTelemetry context extracted from _meta.
+    meta_source:
+        Where the _meta was extracted from (e.g., "ctx.request_context.meta").
+    """
+    if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") != "1":
+        return
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    # Start building the debug output
+    lines = [
+        "=" * 80,
+        f"[FASTMCP OTEL DEBUG] {timestamp}",
+        f"Tool Name: {tool_name}",
+        f"Span Name: {span_name}",
+        f"MCP Method: {mcp_method or 'N/A'}",
+        f"MCP Source: {mcp_source}",
+        f"Meta Source: {meta_source or 'not found'}",
+        "",
+        "OTEL_FIELD_ALIASES propagated from _meta:",
+    ]
+
+    # Extract and log OTEL_FIELD_ALIASES values
+    getter = MetaCarrierGetter()
+    otel_fields_found = False
+
+    for canonical_key, aliases in getter.OTEL_FIELD_ALIASES.items():
+        values = getter.get(meta, canonical_key)
+        if values:
+            otel_fields_found = True
+            # Show which alias was actually used and its value
+            for alias in aliases:
+                if meta and hasattr(meta, "__dict__"):
+                    # Check root level dataclass attributes
+                    if hasattr(meta, alias):
+                        lines.append(f"  {canonical_key} (as '{alias}'): {getattr(meta, alias)}")
+                        break
+                    # Check nested otel/opentelemetry namespaces
+                    for ns_key in getter.OTEL_NAMESPACE_KEYS:
+                        if hasattr(meta, ns_key):
+                            nested = getattr(meta, ns_key)
+                            if hasattr(nested, "__dict__") and hasattr(nested, alias):
+                                lines.append(
+                                    f"  {canonical_key} (as '{ns_key}.{alias}'): {getattr(nested, alias)}"
+                                )
+                                break
+
+    if not otel_fields_found:
+        lines.append("  (none found)")
+
+    # Extract trace/span info from context
+    lines.append("")
+    lines.append("Extracted OpenTelemetry Context:")
+    try:
+        # Get span from the extracted context
+        span = trace.get_current_span(extracted_context)
+        span_context = span.get_span_context()
+        if span_context.is_valid:
+            trace_id = format(span_context.trace_id, "032x")
+            span_id = format(span_context.span_id, "016x")
+            lines.append(f"  Trace ID: {trace_id}")
+            lines.append(f"  Span ID: {span_id}")
+            lines.append(f"  Trace Flags: {span_context.trace_flags}")
+        else:
+            lines.append("  (no valid span context)")
+    except Exception as e:
+        # Context was extracted but span info unavailable (common in test stubs)
+        lines.append(
+            f"  Context extracted successfully (span details unavailable: {type(e).__name__})"
+        )
+
+    # Log raw _meta information
+    lines.append("")
+    lines.append("Raw _meta information:")
+    if meta is None:
+        lines.append("  _meta is None")
+    else:
+        lines.append(f"  _meta type: {type(meta).__name__}")
+        lines.append(f"  _meta repr: {repr(meta)}")
+        if hasattr(meta, "__dict__"):
+            attrs = vars(meta)
+            if attrs:
+                lines.append("  _meta attributes:")
+                for key in sorted(attrs.keys()):
+                    lines.append(f"    - {key}: {attrs[key]}")
+            else:
+                lines.append("  _meta has no attributes")
+        else:
+            lines.append("  _meta is not a dataclass/object (primitive type)")
+
+    lines.append("=" * 80)
+    lines.append("")  # Empty line for readability
+
+    # Write to stderr
+    print("\n".join(lines), file=sys.stderr, flush=True)
+
+
 @dataclass
 class FastMCPTracingMiddleware:
     """FastMCP hook-based middleware that emits OpenTelemetry spans for tool calls.
 
     This middleware uses FastMCP's hook-based middleware system (introduced in v2.9)
     to provide reliable access to tool names and other MCP protocol information.
-    It extracts OpenTelemetry context from the `_meta` field, starts a server span
-    for each tool invocation, and propagates the context through the call chain.
+    It extracts OpenTelemetry context from the `_meta` field via
+    ctx.fastmcp_context.request_context.meta, starts a server span for each tool
+    invocation, and propagates the context through the call chain.
 
     Compatible with FastMCP 2.9+. Does not depend on the fastmcp package directly,
     using duck typing to remain lightweight and flexible.
@@ -192,12 +387,43 @@ class FastMCPTracingMiddleware:
     include_arguments: bool = False
     langfuse_compatible: bool = False
 
+    async def __call__(self, ctx: MiddlewareContext, call_next: CallNext) -> Any:
+        """Main entry point for FastMCP middleware.
+
+        This method makes the middleware callable and dispatches to the appropriate
+        hook method based on the MCP method being invoked. FastMCP's middleware
+        system uses functools.partial to build the middleware chain, which requires
+        middleware to be callable.
+
+        For 'tools/call' methods, this dispatches to on_call_tool. For all other
+        MCP methods (initialize, list_tools, etc.), it passes through without
+        creating spans.
+
+        Parameters
+        ----------
+        ctx:
+            FastMCP middleware context containing the MCP message and metadata.
+        call_next:
+            Callable to invoke the next middleware or the final handler.
+
+        Returns
+        -------
+        Any
+            The result returned by the handler.
+        """
+        # Dispatch to on_call_tool for tool invocations
+        if ctx.method == "tools/call":
+            return await self.on_call_tool(ctx, call_next)
+
+        # For all other methods (initialize, list_tools, etc.), pass through
+        return await call_next(ctx)
+
     async def on_call_tool(self, ctx: MiddlewareContext, call_next: CallNext) -> Any:
         """Handle tool call requests with OpenTelemetry tracing.
 
         This method is called by FastMCP for each tool invocation. It:
         1. Extracts the tool name from context.message.name
-        2. Extracts OpenTelemetry context from context.message._meta
+        2. Extracts OpenTelemetry context from context.fastmcp_context.request_context.meta
         3. Creates a server span for the tool invocation
         4. Calls the next handler in the middleware chain
         5. Records success/failure and returns the result
@@ -217,9 +443,27 @@ class FastMCPTracingMiddleware:
         # Extract tool name from the MCP message
         tool_name = ctx.message.name
 
-        # Extract OpenTelemetry context from _meta field
-        meta = getattr(ctx.message, "_meta", None)
+        # Extract OpenTelemetry context from _meta field via fastmcp_context
+        meta = None
+        meta_source = "ctx.fastmcp_context.request_context.meta"
+        if ctx.fastmcp_context is not None:
+            request_ctx = ctx.fastmcp_context.request_context
+            if request_ctx is not None:
+                meta = request_ctx.meta
+
         parent_context = get_context_from_meta(meta, self.propagator, self.getter)
+
+        # Early debug logging to see what _meta contains
+        if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") == "1":
+            print(
+                f"[FASTMCP OTEL DEBUG] Extracting _meta:\n"
+                f"  meta source: {meta_source}\n"
+                f"  _meta value: {repr(meta)}\n"
+                f"  _meta type: {type(meta).__name__ if meta is not None else 'None'}\n"
+                f"  parent_contexte: {parent_context}",
+                file=sys.stderr,
+                flush=True,
+            )
 
         # Attach the extracted context to the current task
         token = context.attach(parent_context)
@@ -227,6 +471,17 @@ class FastMCPTracingMiddleware:
         # Get tracer and create span name
         tracer = self.tracer or trace.get_tracer(__name__)
         span_name = f"{self.span_name_prefix}{tool_name}"
+
+        # Debug logging if enabled
+        _debug_log_tool_call(
+            tool_name=tool_name,
+            meta=meta,
+            span_name=span_name,
+            mcp_method=ctx.method,
+            mcp_source=ctx.source,
+            extracted_context=parent_context,
+            meta_source=meta_source,
+        )
 
         try:
             with tracer.start_as_current_span(
@@ -307,7 +562,7 @@ def instrument_fastmcp(
     standard ``app.add_middleware()`` method. The middleware will automatically
     trace all tool invocations with OpenTelemetry spans.
 
-    Compatible with FastMCP 2.9+.
+    Compatible with FastMCP 2.13.1+ (requires request_context.meta API).
 
     Parameters
     ----------
@@ -358,6 +613,6 @@ def instrument_fastmcp(
 
     raise TypeError(
         f"The provided app does not have an 'add_middleware' method. "
-        f"This middleware requires FastMCP 2.9 or later. "
+        f"This middleware requires FastMCP 2.13.1 or later. "
         f"Got app type: {type(app)}"
     )

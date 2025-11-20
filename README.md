@@ -1,6 +1,6 @@
 # FastMCP OpenTelemetry Middleware
 
-This package contains lightweight utilities for wiring [OpenTelemetry](https://opentelemetry.io/) tracing into [FastMCP](https://github.com/jlowin/fastmcp) servers.  It is designed around the Model Context Protocol's `_meta` propagation field, allowing client applications to forward tracing information such as `traceparent` and `baggage` headers to the server.
+This package contains lightweight utilities for wiring [OpenTelemetry](https://opentelemetry.io/) tracing into [FastMCP](https://github.com/jlowin/fastmcp) servers.  It is designed around the Model Context Protocol's `_meta` propagation field, allowing client applications to forward tracing information via the `traceparent` header to the server.
 
 ## Features
 
@@ -59,8 +59,7 @@ from fastmcp_otel_middleware import get_context_from_meta
 
 meta = {
     "otel": {
-        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        "baggage": "userId=alice"
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     }
 }
 
@@ -69,7 +68,7 @@ ctx = get_context_from_meta(meta)
 
 ## Requirements
 
-- **FastMCP 2.9+**: This middleware uses the hook-based middleware system introduced in FastMCP 2.9
+- **FastMCP 2.13.1+**
 - **Python 3.12+**: Required for proper type annotation support
 - **OpenTelemetry API**: For tracing functionality
 

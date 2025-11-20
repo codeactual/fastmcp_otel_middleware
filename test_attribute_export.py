@@ -4,7 +4,6 @@ import asyncio
 import json
 import textwrap
 
-import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -21,6 +20,20 @@ class MockToolCallMessage:
         self._meta = meta
 
 
+class MockRequestContext:
+    """Mock FastMCP request context."""
+
+    def __init__(self, meta: dict | None = None):
+        self.meta = meta
+
+
+class MockContext:
+    """Mock FastMCP Context."""
+
+    def __init__(self, request_context):
+        self.request_context = request_context
+
+
 class MockMiddlewareContext:
     """Mock FastMCP middleware context."""
 
@@ -33,9 +46,11 @@ class MockMiddlewareContext:
         self.message = message
         self.method = method
         self.source = source
+        # Create fastmcp_context from message._meta for backward compatibility
+        self.request_context = MockRequestContext(meta=message._meta)
+        self.fastmcp_context = MockContext(request_context=self.request_context)
 
 
-@pytest.mark.asyncio
 def test_attribute_export():
     """Test that span attributes are properly set and exported."""
 

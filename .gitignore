@@ -61,6 +61,3 @@ venv.bak/
 *.swo
 *~
 .DS_Store
-
-# uv
-uv.lock
