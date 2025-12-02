@@ -58,6 +58,11 @@ class FastMCPContext(Protocol):
         """Access to the underlying request context."""
         ...
 
+    @property
+    def server(self) -> Any | None:
+        """Reference to the FastMCP server instance (if available)."""
+        ...
+
 
 class MiddlewareContext(Protocol):
     """Protocol for FastMCP middleware context objects."""
@@ -453,6 +458,9 @@ class FastMCPTracingMiddleware:
 
         parent_context = get_context_from_meta(meta, self.propagator, self.getter)
 
+        server_name = self._get_server_name(ctx)
+        server_version = self._get_server_version(ctx)
+
         # Early debug logging to see what _meta contains
         if os.environ.get("FASTMCP_OTEL_MIDDLEWARE_DEBUG_LOG") == "1":
             print(
@@ -489,6 +497,22 @@ class FastMCPTracingMiddleware:
             ) as span:
                 # Add span attributes
                 self._set_attribute(span, "fastmcp.tool.name", tool_name, langfuse_name="tool_name")
+
+                if server_name:
+                    self._set_attribute(
+                        span,
+                        "fastmcp.server.name",
+                        server_name,
+                        langfuse_name="server_name",
+                    )
+
+                if server_version:
+                    self._set_attribute(
+                        span,
+                        "fastmcp.server.version",
+                        server_version,
+                        langfuse_name="server_version",
+                    )
 
                 if ctx.method:
                     self._set_attribute(span, "mcp.method", ctx.method, langfuse_name="mcp_method")
@@ -548,6 +572,52 @@ class FastMCPTracingMiddleware:
         if self.langfuse_compatible and langfuse_name:
             span.set_attribute("langfuse.observation.type", "tool")
             span.set_attribute(f"langfuse.observation.metadata.{langfuse_name}", value)
+
+    def _get_server_name(self, ctx: MiddlewareContext) -> str | None:
+        """Extract the FastMCP server name from the middleware context."""
+
+        fastmcp_ctx = ctx.fastmcp_context
+        if fastmcp_ctx is None:
+            return None
+
+        # Preferred: FastMCP contexts expose the server instance on ``server``
+        server = getattr(fastmcp_ctx, "server", None)
+        if server is not None:
+            name = getattr(server, "name", None)
+            if isinstance(name, str):
+                return name
+
+        # Fallbacks for potential FastMCP implementations/test doubles
+        for candidate in (
+            getattr(fastmcp_ctx, "server_name", None),
+            getattr(fastmcp_ctx, "name", None),
+        ):
+            if isinstance(candidate, str):
+                return candidate
+
+        return None
+
+    def _get_server_version(self, ctx: MiddlewareContext) -> str | None:
+        """Extract the FastMCP server version from the middleware context."""
+
+        fastmcp_ctx = ctx.fastmcp_context
+        if fastmcp_ctx is None:
+            return None
+
+        server = getattr(fastmcp_ctx, "server", None)
+        if server is not None:
+            version = getattr(server, "version", None)
+            if isinstance(version, str):
+                return version
+
+        for candidate in (
+            getattr(fastmcp_ctx, "server_version", None),
+            getattr(fastmcp_ctx, "version", None),
+        ):
+            if isinstance(candidate, str):
+                return candidate
+
+        return None
 
 
 def instrument_fastmcp(
