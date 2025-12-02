@@ -51,7 +51,11 @@ class RequestContext(Protocol):
 
 
 class FastMCPContext(Protocol):
-    """Protocol for FastMCP Context object."""
+    """Protocol for FastMCP Context object.
+
+    Note: Real FastMCP 2.13+ implementations expose the server via the ``fastmcp``
+    attribute. The ``server`` attribute is kept for test mocks and potential future API changes.
+    """
 
     @property
     def request_context(self) -> RequestContext | None:
@@ -59,8 +63,13 @@ class FastMCPContext(Protocol):
         ...
 
     @property
+    def fastmcp(self) -> Any | None:
+        """Reference to the FastMCP server instance (FastMCP 2.13+)."""
+        ...
+
+    @property
     def server(self) -> Any | None:
-        """Reference to the FastMCP server instance (if available)."""
+        """Reference to the FastMCP server instance (test mocks/future API)."""
         ...
 
 
@@ -580,7 +589,14 @@ class FastMCPTracingMiddleware:
         if fastmcp_ctx is None:
             return None
 
-        # Preferred: FastMCP contexts expose the server instance on ``server``
+        # Primary: FastMCP 2.13+ exposes the server instance via ``fastmcp`` attribute
+        fastmcp_server = getattr(fastmcp_ctx, "fastmcp", None)
+        if fastmcp_server is not None:
+            name = getattr(fastmcp_server, "name", None)
+            if isinstance(name, str):
+                return name
+
+        # Secondary: Check for ``server`` attribute (test mocks/future API)
         server = getattr(fastmcp_ctx, "server", None)
         if server is not None:
             name = getattr(server, "name", None)
@@ -604,12 +620,21 @@ class FastMCPTracingMiddleware:
         if fastmcp_ctx is None:
             return None
 
+        # Primary: FastMCP 2.13+ exposes the server instance via ``fastmcp`` attribute
+        fastmcp_server = getattr(fastmcp_ctx, "fastmcp", None)
+        if fastmcp_server is not None:
+            version = getattr(fastmcp_server, "version", None)
+            if isinstance(version, str):
+                return version
+
+        # Secondary: Check for ``server`` attribute (test mocks/future API)
         server = getattr(fastmcp_ctx, "server", None)
         if server is not None:
             version = getattr(server, "version", None)
             if isinstance(version, str):
                 return version
 
+        # Fallbacks for potential FastMCP implementations/test doubles
         for candidate in (
             getattr(fastmcp_ctx, "server_version", None),
             getattr(fastmcp_ctx, "version", None),
