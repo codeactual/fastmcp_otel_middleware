@@ -160,3 +160,64 @@ async def test_middleware_handles_non_tool_methods(tracer_provider):
                 "(requires version 2.13.1 or later)"
             )
         raise
+
+
+@pytest.mark.asyncio
+async def test_middleware_captures_server_name_and_version(tracer_provider):
+    """Test that middleware captures server name and version from real FastMCP.
+
+    This test verifies the fix for the issue where server name and version
+    were not being captured because the real FastMCP context uses 'fastmcp'
+    attribute instead of 'server'.
+    """
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+
+    # Create a FastMCP server with explicit name and version
+    mcp = FastMCP("DemoServer", version="1.2.3")
+
+    @mcp.tool()
+    def test_tool() -> str:
+        """A test tool."""
+        return "ok"
+
+    # Instrument with langfuse_compatible to ensure metadata attributes are set
+    instrument_fastmcp(
+        mcp,
+        tracer=tracer,
+        span_name_prefix="tool.",
+        langfuse_compatible=True,
+    )
+
+    try:
+        async with Client(mcp) as client:
+            await client.call_tool("test_tool", {})
+
+        # Verify that spans were created
+        finished_spans = exporter.get_finished_spans()
+        assert len(finished_spans) > 0
+
+        # Find the tool call span
+        tool_spans = [s for s in finished_spans if s.name == "tool.test_tool"]
+        assert len(tool_spans) == 1
+
+        span = tool_spans[0]
+
+        # Verify server name and version attributes are present
+        assert "fastmcp.server.name" in span.attributes
+        assert span.attributes["fastmcp.server.name"] == "DemoServer"
+        assert "langfuse.observation.metadata.server_name" in span.attributes
+        assert span.attributes["langfuse.observation.metadata.server_name"] == "DemoServer"
+
+        assert "fastmcp.server.version" in span.attributes
+        assert span.attributes["fastmcp.server.version"] == "1.2.3"
+        assert "langfuse.observation.metadata.server_version" in span.attributes
+        assert span.attributes["langfuse.observation.metadata.server_version"] == "1.2.3"
+
+    except AttributeError as e:
+        if "request_context" in str(e):
+            pytest.skip(
+                "FastMCP version does not support request_context.meta API "
+                "(requires version 2.13.1 or later)"
+            )
+        raise

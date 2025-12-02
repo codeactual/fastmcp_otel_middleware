@@ -79,11 +79,24 @@ class MockRequestContext:
         self.meta = meta
 
 
+class MockServer:
+    """Mock FastMCP server object."""
+
+    def __init__(self, name: str | None = None, version: str | None = None):
+        self.name = name
+        self.version = version
+
+
 class MockContext:
     """Mock FastMCP Context."""
 
-    def __init__(self, request_context: MockRequestContext | None = None):
+    def __init__(
+        self,
+        request_context: MockRequestContext | None = None,
+        server: MockServer | None = None,
+    ):
         self.request_context = request_context
+        self.server = server
 
 
 class MockMiddlewareContext:
@@ -95,6 +108,8 @@ class MockMiddlewareContext:
         method: str = "tools/call",
         source: str = "client",
         fastmcp_context: MockContext | None = None,
+        server_name: str | None = None,
+        server_version: str | None = None,
     ):
         self.message = message
         self.method = method
@@ -102,7 +117,12 @@ class MockMiddlewareContext:
         # If no fastmcp_context provided, create one from message._meta for backward compatibility
         if fastmcp_context is None:
             request_ctx = MockRequestContext(meta=message._meta)
-            self.fastmcp_context = MockContext(request_context=request_ctx)
+            server = (
+                MockServer(name=server_name, version=server_version)
+                if (server_name or server_version)
+                else None
+            )
+            self.fastmcp_context = MockContext(request_context=request_ctx, server=server)
         else:
             self.fastmcp_context = fastmcp_context
 
@@ -153,6 +173,42 @@ def test_middleware_creates_span_with_parent(tracer_provider, parent_context):
     assert span.attributes["langfuse.observation.metadata.tool_success"] is True
 
     assert span.kind.name == "SERVER"
+
+
+def test_middleware_sets_server_name_attribute(tracer_provider):
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    middleware = FastMCPTracingMiddleware(tracer=tracer, langfuse_compatible=True)
+
+    message = MockToolCallMessage(name="server-tool")
+    ctx = MockMiddlewareContext(message=message, server_name="DemoServer")
+
+    async def call_next(context):
+        return "result"
+
+    asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    span = exporter.get_finished_spans()[0]
+    assert span.attributes["fastmcp.server.name"] == "DemoServer"
+    assert span.attributes["langfuse.observation.metadata.server_name"] == "DemoServer"
+
+
+def test_middleware_sets_server_version_attribute(tracer_provider):
+    provider, exporter = tracer_provider
+    tracer = provider.get_tracer(__name__)
+    middleware = FastMCPTracingMiddleware(tracer=tracer, langfuse_compatible=True)
+
+    message = MockToolCallMessage(name="versioned-tool")
+    ctx = MockMiddlewareContext(message=message, server_version="1.2.3")
+
+    async def call_next(context):
+        return "result"
+
+    asyncio.run(middleware.on_call_tool(ctx, call_next))
+
+    span = exporter.get_finished_spans()[0]
+    assert span.attributes["fastmcp.server.version"] == "1.2.3"
+    assert span.attributes["langfuse.observation.metadata.server_version"] == "1.2.3"
 
 
 def test_middleware_omits_langfuse_attributes_by_default(tracer_provider, parent_context):
